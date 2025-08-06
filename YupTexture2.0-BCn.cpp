@@ -182,6 +182,7 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
     // --- CONFIGURE COMPRESSION BASED ON TEXTURE TYPE ---
     params.vqCodebookSize = 512;
     params.bcQuality = 1.0f;
+    params.zstdLevel = 20;
     // USE THE HIGHEST QUALITY METRIC BY DEFAULT
     params.vqMetric = VQEncoder::DistanceMetric::PERCEPTUAL_LAB;
 
