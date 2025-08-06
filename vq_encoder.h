@@ -46,6 +46,7 @@ public:
     struct Config {
         uint32_t codebookSize = 256;
         uint32_t maxIterations = 20;
+        float fastModeSampleRatio = 1.0f;
         DistanceMetric metric = DistanceMetric::PERCEPTUAL_LAB;
     };
 
@@ -170,23 +171,41 @@ public:
 
 // --- VQEncoder Method Implementations ---
 
-inline VQCodebook VQEncoder::BuildCodebook(const std::vector<std::vector<uint8_t>>& rgbaBlocks, std::vector<std::vector<uint8_t>>& outRgbaCentroids) {
-    size_t numBlocks = rgbaBlocks.size();
-    if (numBlocks == 0) return VQCodebook(BCBlockSize::GetSize(bcFormat), 0);
-    if (numBlocks < config.codebookSize) {
-        config.codebookSize = static_cast<uint32_t>(numBlocks);
+inline VQCodebook VQEncoder::BuildCodebook(const std::vector<std::vector<uint8_t>>& allRgbaBlocks, std::vector<std::vector<uint8_t>>& outRgbaCentroids) {
+    // OPTIMIZATION: Use a subset of blocks for faster codebook generation
+    std::vector<const std::vector<uint8_t>*> sampledBlocksPtrs;
+    if (config.fastModeSampleRatio < 1.0f && config.fastModeSampleRatio > 0.0f) {
+        size_t numToSample = static_cast<size_t>(allRgbaBlocks.size() * config.fastModeSampleRatio);
+        numToSample = std::max(static_cast<size_t>(config.codebookSize), numToSample); // Need at least as many blocks as centroids
+        sampledBlocksPtrs.reserve(numToSample);
+
+        // Simple strided sampling
+        double step = static_cast<double>(allRgbaBlocks.size()) / numToSample;
+        for (double i = 0; i < allRgbaBlocks.size() && sampledBlocksPtrs.size() < numToSample; i += step) {
+            sampledBlocksPtrs.push_back(&allRgbaBlocks[static_cast<size_t>(i)]);
+        }
     }
+    else {
+        // Default: use all blocks
+        sampledBlocksPtrs.reserve(allRgbaBlocks.size());
+        for (const auto& block : allRgbaBlocks) {
+            sampledBlocksPtrs.push_back(&block);
+        }
+    }
+    const auto& rgbaBlocks = sampledBlocksPtrs; // Use this reference for the rest of the function
+
+    size_t numBlocks = rgbaBlocks.size();
 
     // 1. K-Means++ Initialization (always done in RGB space for speed)
     std::vector<std::vector<uint8_t>> rgbaCentroids(config.codebookSize);
     std::vector<float> minDistSq(numBlocks, std::numeric_limits<float>::max());
     std::uniform_int_distribution<size_t> distrib(0, numBlocks - 1);
-    rgbaCentroids[0] = rgbaBlocks[distrib(rng)];
+    rgbaCentroids[0] = *rgbaBlocks[distrib(rng)];
     for (uint32_t i = 1; i < config.codebookSize; ++i) {
         double current_sum = 0.0;
 #pragma omp parallel for reduction(+:current_sum)
         for (int64_t j = 0; j < numBlocks; ++j) {
-            float d = RgbaBlockDistance_SIMD(rgbaBlocks[j].data(), rgbaCentroids[i - 1].data());
+            float d = RgbaBlockDistance_SIMD((*rgbaBlocks[j]).data(), rgbaCentroids[i - 1].data());
             minDistSq[j] = std::min(d * d, minDistSq[j]);
             current_sum += minDistSq[j];
         }
@@ -200,7 +219,7 @@ inline VQCodebook VQEncoder::BuildCodebook(const std::vector<std::vector<uint8_t
         for (size_t j = 0; j < numBlocks; ++j) {
             cumulative_p += minDistSq[j];
             if (cumulative_p >= p) {
-                rgbaCentroids[i] = rgbaBlocks[j];
+                rgbaCentroids[i] = *rgbaBlocks[j];
                 break;
             }
         }
@@ -213,7 +232,7 @@ inline VQCodebook VQEncoder::BuildCodebook(const std::vector<std::vector<uint8_t
         std::vector<CielabBlock> labBlocks(numBlocks);
         std::vector<CielabBlock> labCentroids(config.codebookSize);
 #pragma omp parallel for
-        for (int64_t i = 0; i < numBlocks; ++i) labBlocks[i] = RgbaBlockToCielabBlock(rgbaBlocks[i]);
+        for (int64_t i = 0; i < numBlocks; ++i) labBlocks[i] = RgbaBlockToCielabBlock(*rgbaBlocks[i]);
 #pragma omp parallel for
         for (int64_t i = 0; i < config.codebookSize; ++i) labCentroids[i] = RgbaBlockToCielabBlock(rgbaCentroids[i]);
 
@@ -231,13 +250,37 @@ inline VQCodebook VQEncoder::BuildCodebook(const std::vector<std::vector<uint8_t
             }
             if (!hasChanged) break;
 
+            // OPTIMIZATION: Parallelize the centroid update step using reduction.
             std::vector<CielabBlock> newCentroids(config.codebookSize, CielabBlock(64, 0.0f));
             std::vector<uint32_t> counts(config.codebookSize, 0);
-            for (size_t i = 0; i < numBlocks; ++i) {
-                uint32_t c_idx = assignments[i];
-                counts[c_idx]++;
-                for (size_t j = 0; j < 64; ++j) newCentroids[c_idx][j] += labBlocks[i][j];
+
+#pragma omp parallel
+            {
+                // Each thread gets a private copy of accumulators
+                std::vector<CielabBlock> localNewCentroids(config.codebookSize, CielabBlock(64, 0.0f));
+                std::vector<uint32_t> localCounts(config.codebookSize, 0);
+
+#pragma omp for nowait // Distribute the work without a barrier
+                for (int64_t i = 0; i < numBlocks; ++i) {
+                    uint32_t c_idx = assignments[i];
+                    localCounts[c_idx]++;
+                    for (size_t j = 0; j < 64; ++j) {
+                        localNewCentroids[c_idx][j] += labBlocks[i][j];
+                    }
+                }
+
+                // Combine the private results into the global result under a critical section
+#pragma omp critical
+                {
+                    for (uint32_t c = 0; c < config.codebookSize; ++c) {
+                        counts[c] += localCounts[c];
+                        for (size_t j = 0; j < 64; ++j) {
+                            newCentroids[c][j] += localNewCentroids[c][j];
+                        }
+                    }
+                }
             }
+
 #pragma omp parallel for
             for (int64_t c = 0; c < config.codebookSize; ++c) {
                 if (counts[c] > 0) {
@@ -245,11 +288,6 @@ inline VQCodebook VQEncoder::BuildCodebook(const std::vector<std::vector<uint8_t
                     for (size_t j = 0; j < 64; ++j) labCentroids[c][j] = newCentroids[c][j] * inv_count;
                 }
             }
-        }
-        // BUGFIX: Convert the final, refined LAB centroids back to RGBA for output.
-#pragma omp parallel for
-        for (int64_t i = 0; i < config.codebookSize; ++i) {
-            rgbaCentroids[i] = CielabBlockToRgbaBlock(labCentroids[i]);
         }
     }
     else { // RGB_SIMD path
@@ -260,20 +298,43 @@ inline VQCodebook VQEncoder::BuildCodebook(const std::vector<std::vector<uint8_t
                 float min_d = std::numeric_limits<float>::max();
                 uint32_t best_c = 0;
                 for (uint32_t c = 0; c < config.codebookSize; ++c) {
-                    float d = RgbaBlockDistance_SIMD(rgbaBlocks[i].data(), rgbaCentroids[c].data());
+                    float d = RgbaBlockDistance_SIMD((*rgbaBlocks[i]).data(), rgbaCentroids[c].data());
                     if (d < min_d) { min_d = d; best_c = c; }
                 }
                 if (assignments[i] != best_c) { assignments[i] = best_c; hasChanged = true; }
             }
             if (!hasChanged) break;
 
+            // OPTIMIZATION: Parallelize the centroid update step using reduction.
             std::vector<std::vector<uint64_t>> newCentroids(config.codebookSize, std::vector<uint64_t>(64, 0));
             std::vector<uint32_t> counts(config.codebookSize, 0);
-            for (size_t i = 0; i < numBlocks; ++i) {
-                uint32_t c_idx = assignments[i];
-                counts[c_idx]++;
-                for (size_t j = 0; j < 64; ++j) newCentroids[c_idx][j] += rgbaBlocks[i][j];
+
+#pragma omp parallel
+            {
+                // Each thread gets a private copy of accumulators
+                std::vector<std::vector<uint64_t>> localNewCentroids(config.codebookSize, std::vector<uint64_t>(64, 0));
+                std::vector<uint32_t> localCounts(config.codebookSize, 0);
+
+#pragma omp for nowait
+                for (int64_t i = 0; i < numBlocks; ++i) {
+                    uint32_t c_idx = assignments[i];
+                    localCounts[c_idx]++;
+                    for (size_t j = 0; j < 64; ++j) {
+                        localNewCentroids[c_idx][j] += (*rgbaBlocks[i])[j];
+                    }
+                }
+
+#pragma omp critical
+                {
+                    for (uint32_t c = 0; c < config.codebookSize; ++c) {
+                        counts[c] += localCounts[c];
+                        for (size_t j = 0; j < 64; ++j) {
+                            newCentroids[c][j] += localNewCentroids[c][j];
+                        }
+                    }
+                }
             }
+
 #pragma omp parallel for
             for (int64_t c = 0; c < config.codebookSize; ++c) {
                 if (counts[c] > 0) {

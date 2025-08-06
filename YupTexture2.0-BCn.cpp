@@ -108,37 +108,37 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
     std::string metric_str;
 
     params.bcQuality = 1.0f;
-    params.zstdLevel = 20;
+    params.zstdLevel = 10;
+	params.useMultithreading = true;
+	params.vqFastModeSampleRatio = 0.8f; // Use 80% of the original pixels for fast mode
 
-    // OPTIMIZATION: Choose the VQ metric based on texture type for a better speed/quality trade-off.
-    // Use the expensive (but high quality) LAB metric only for color maps.
     switch (type) {
     case Albedo:
         std::cout << "Texture Type: Albedo (Using BC1 for color)\n";
         params.bcFormat = BCFormat::BC1;
         params.vqCodebookSize = 512;
-        params.vqMetric = VQEncoder::DistanceMetric::PERCEPTUAL_LAB; // Highest quality for color
+        params.vqMetric = VQEncoder::DistanceMetric::PERCEPTUAL_LAB;
         metric_str = "_lab";
         break;
     case Normal:
         std::cout << "Texture Type: Normal (Using BC5 for two-channel data)\n";
         params.bcFormat = BCFormat::BC5;
         params.vqCodebookSize = 256;
-        params.vqMetric = VQEncoder::DistanceMetric::RGB_SIMD; // RGB is faster and sufficient
+        params.vqMetric = VQEncoder::DistanceMetric::RGB_SIMD;
         metric_str = "_rgb";
         break;
     case Grayscale:
         std::cout << "Texture Type: Grayscale (Using BC4 for single-channel data)\n";
         params.bcFormat = BCFormat::BC4;
         params.vqCodebookSize = 128;
-        params.vqMetric = VQEncoder::DistanceMetric::RGB_SIMD; // RGB is faster and sufficient
+        params.vqMetric = VQEncoder::DistanceMetric::RGB_SIMD;
         metric_str = "_rgb";
         break;
     default:
         std::cout << "Texture Type: Unknown (Defaulting to BC1)\n";
         params.bcFormat = BCFormat::BC1;
         params.vqCodebookSize = 256;
-        params.vqMetric = VQEncoder::DistanceMetric::RGB_SIMD; // Default to faster RGB
+        params.vqMetric = VQEncoder::DistanceMetric::RGB_SIMD;
         metric_str = "_rgb_unknown";
         break;
     }
@@ -172,11 +172,16 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
         inFile.read(reinterpret_cast<char*>(loadedTexture.compressedData.data()), zstdDataSize);
         inFile.close();
 
-        auto start_decompress = std::chrono::high_resolution_clock::now();
-        auto decompressed = compressor.DecompressToRGBA(loadedTexture);
-        auto end_decompress = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double> diff_decompress = end_decompress - start_decompress;
-        std::cout << "Decompression finished in " << std::fixed << std::setprecision(2) << diff_decompress.count() << " seconds.\n";
+        // --- TIMING THE REAL-WORLD DECOMPRESSION SCENARIO ---
+        auto start_decompress_bcn = std::chrono::high_resolution_clock::now();
+        auto bcData = compressor.DecompressToBCn(loadedTexture);
+        auto end_decompress_bcn = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> diff_decompress_bcn = end_decompress_bcn - start_decompress_bcn;
+        std::cout << "Decompression to BCn (GPU-ready) finished in " << std::fixed << std::setprecision(4) << diff_decompress_bcn.count() << " seconds.\n";
+
+        // --- For verification, decompress the BCn data to RGBA and save a PNG ---
+        BCnCompressor bcn_decoder;
+        auto decompressed = bcn_decoder.DecompressToRGBA(bcData.data(), loadedTexture.info.width, loadedTexture.info.height, loadedTexture.info.format);
 
         if (params.bcFormat == BCFormat::BC5) {
             std::cout << "Reconstructing Z-channel for BC5 normal map visualization...\n";

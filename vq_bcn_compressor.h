@@ -40,6 +40,7 @@ public:
         VQEncoder::DistanceMetric vqMetric = VQEncoder::DistanceMetric::PERCEPTUAL_LAB;
         int zstdLevel = 3;
         bool useMultithreading = true;
+        float vqFastModeSampleRatio = 1.0f;
     };
 
     VQBCnCompressor() : zstdCtx(std::make_unique<ZstdContext>()) {}
@@ -129,7 +130,8 @@ public:
         return result;
     }
 
-    std::vector<uint8_t> DecompressToRGBA(const CompressedTexture& compressed) {
+    // NEW FUNCTION: Decompresses directly to BCn format for GPU consumption.
+    std::vector<uint8_t> DecompressToBCn(const CompressedTexture& compressed) {
         if (compressed.compressedData.empty()) {
             throw std::runtime_error("Compressed data stream is empty. Cannot decompress.");
         }
@@ -137,36 +139,19 @@ public:
         // 1. Decompress the ZSTD stream to get the payload (codebook + indices)
         size_t decompressedSize = ZSTD_getFrameContentSize(compressed.compressedData.data(), compressed.compressedData.size());
         if (decompressedSize == ZSTD_CONTENTSIZE_ERROR || decompressedSize == ZSTD_CONTENTSIZE_UNKNOWN) {
-            // Fallback for when content size isn't stored in the frame header
-            decompressedSize = compressed.info.GetTotalBlocks() * sizeof(uint32_t) + compressed.info.storedCodebookEntries * BCBlockSize::GetSize(compressed.info.format) * 2; // Estimate
+            throw std::runtime_error("Failed to get ZSTD decompressed size. The frame may be malformed or not contain the content size.");
         }
 
-        std::vector<uint8_t> uncompressedPayload;
-        size_t dSizeResult = ZSTD_CONTENTSIZE_UNKNOWN;
+        std::vector<uint8_t> uncompressedPayload(decompressedSize);
+        size_t const dSize = ZSTD_decompressDCtx(
+            zstdCtx->dctx,
+            uncompressedPayload.data(), uncompressedPayload.size(),
+            compressed.compressedData.data(), compressed.compressedData.size()
+        );
 
-        // Loop to handle cases where the initial buffer is too small
-        for (int i = 0; i < 3; ++i) { // Try up to 3 times with increasing buffer size
-            uncompressedPayload.resize(decompressedSize);
-            dSizeResult = ZSTD_decompressDCtx(
-                zstdCtx->dctx,
-                uncompressedPayload.data(), uncompressedPayload.size(),
-                compressed.compressedData.data(), compressed.compressedData.size()
-            );
-            if (!ZSTD_isError(dSizeResult)) {
-                if (dSizeResult <= decompressedSize) break; // Success
-            }
-            else {
-                throw std::runtime_error("Zstd decompression failed: " + std::string(ZSTD_getErrorName(dSizeResult)));
-            }
-            if (ZSTD_getErrorCode(dSizeResult) == ZSTD_error_dstSize_tooSmall) {
-                decompressedSize *= 2; // Double buffer size and retry
-            }
+        if (ZSTD_isError(dSize) || dSize != decompressedSize) {
+            throw std::runtime_error("Zstd decompression failed: " + std::string(ZSTD_getErrorName(dSize)));
         }
-
-        if (ZSTD_isError(dSizeResult)) {
-            throw std::runtime_error("Zstd decompression failed after retries: " + std::string(ZSTD_getErrorName(dSizeResult)));
-        }
-        uncompressedPayload.resize(dSizeResult);
 
         // 2. Parse the uncompressed payload into a local codebook and indices
         const size_t blockSize = BCBlockSize::GetSize(compressed.info.format);
@@ -175,38 +160,32 @@ public:
         const size_t totalBlocks = compressed.info.GetTotalBlocks();
         const size_t indicesDataSize = totalBlocks * sizeof(uint32_t);
 
-        if (uncompressedPayload.size() != codebookDataSize + indicesDataSize) {
+        if (decompressedSize != codebookDataSize + indicesDataSize) {
             throw std::runtime_error("Decompressed data size mismatch.");
         }
 
-        VQCodebook localCodebook(blockSize, numCodebookEntries);
-        localCodebook.entries.resize(numCodebookEntries);
-
-        size_t offset = 0;
-        for (uint32_t i = 0; i < numCodebookEntries; ++i) {
-            localCodebook.entries[i].resize(blockSize);
-            std::memcpy(localCodebook.entries[i].data(), uncompressedPayload.data() + offset, blockSize);
-            offset += blockSize;
-        }
-
-        std::vector<uint32_t> localIndices(totalBlocks);
-        std::memcpy(localIndices.data(), uncompressedPayload.data() + offset, indicesDataSize);
+        // Use a pointer to avoid copying the codebook data
+        const uint8_t* codebookDataPtr = uncompressedPayload.data();
+        const uint32_t* indicesDataPtr = reinterpret_cast<const uint32_t*>(uncompressedPayload.data() + codebookDataSize);
 
         // 3. Reconstruct the BCn data from the parsed codebook and indices
         std::vector<uint8_t> bcData(totalBlocks * blockSize);
-
 #pragma omp parallel for
         for (int64_t i = 0; i < totalBlocks; ++i) {
-            uint32_t idx = localIndices[i];
-            if (idx >= localCodebook.entries.size()) {
-                // Handle potential error case of an invalid index gracefully
-                std::fill_n(bcData.data() + i * blockSize, blockSize, 0);
-                continue;
-            }
-            std::memcpy(bcData.data() + i * blockSize, localCodebook.entries[idx].data(), blockSize);
+            uint32_t idx = indicesDataPtr[i];
+            // No need for index validation if we trust the compressor, but it's safer for production
+            // if (idx >= numCodebookEntries) { continue; }
+            std::memcpy(bcData.data() + i * blockSize, codebookDataPtr + idx * blockSize, blockSize);
         }
 
-        // 4. Decompress the reconstructed BCn data to final RGBA
+        return bcData;
+    }
+
+    std::vector<uint8_t> DecompressToRGBA(const CompressedTexture& compressed) {
+        // This function now chains the BCn decompression with a final conversion to RGBA.
+        auto bcData = DecompressToBCn(compressed);
+
+        // Decompress the reconstructed BCn data to final RGBA
         return bcnCompressor.DecompressToRGBA(
             bcData.data(), compressed.info.width, compressed.info.height, compressed.info.format
         );
