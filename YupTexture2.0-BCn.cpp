@@ -188,8 +188,8 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
 
     switch (type) {
     case Albedo:
-        std::cout << "Texture Type: Albedo (Using BC1/BC7 for high quality color)\n";
-        params.bcFormat = BCFormat::BC1; 
+        std::cout << "Texture Type: Albedo (Using BC1 for color)\n";
+        params.bcFormat = BCFormat::BC1;
         suffix = "_bc1_lab";
         break;
     case Normal:
@@ -210,39 +210,59 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
     }
 
     try {
-        auto start = std::chrono::high_resolution_clock::now();
+        // --- COMPRESS and SAVE ---
+        auto start_compress = std::chrono::high_resolution_clock::now();
         auto compressed = compressor.Compress(image.data.data(), image.width, image.height, params);
-        auto end = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<double> diff = end - start;
-        std::cout << "Compression finished in " << std::fixed << std::setprecision(2) << diff.count() << " seconds.\n";
+        auto end_compress = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> diff_compress = end_compress - start_compress;
+        std::cout << "Compression finished in " << std::fixed << std::setprecision(2) << diff_compress.count() << " seconds.\n";
 
-        std::string out_name_bin = "output/" + filePath.stem().string() + suffix + ".bin";
+        std::string out_name_bin = "output/" + filePath.stem().string() + suffix + ".yupt2";
         std::ofstream outFile(out_name_bin, std::ios::binary);
+        if (!outFile) {
+            throw std::runtime_error("Failed to open " + out_name_bin + " for writing.");
+        }
+        // Write the header (TextureInfo) and then the compressed data
+        outFile.write(reinterpret_cast<const char*>(&compressed.info), sizeof(TextureInfo));
         outFile.write(reinterpret_cast<const char*>(compressed.compressedData.data()), compressed.compressedData.size());
         outFile.close();
+        std::cout << "Saved compressed file: " << out_name_bin << std::endl;
 
-        auto decompressed = compressor.DecompressToRGBA(compressed);
+        // --- LOAD and DECOMPRESS (to verify correctness of the full pipeline) ---
+        std::ifstream inFile(out_name_bin, std::ios::binary);
+        if (!inFile) {
+            throw std::runtime_error("Failed to open " + out_name_bin + " for reading.");
+        }
+
+        CompressedTexture loadedTexture;
+        // Read header
+        inFile.read(reinterpret_cast<char*>(&loadedTexture.info), sizeof(TextureInfo));
+        // Read the rest of the file into the compressed data buffer
+        inFile.seekg(0, std::ios::end);
+        size_t zstdDataSize = static_cast<size_t>(inFile.tellg()) - sizeof(TextureInfo);
+        loadedTexture.compressedData.resize(zstdDataSize);
+        inFile.seekg(sizeof(TextureInfo), std::ios::beg);
+        inFile.read(reinterpret_cast<char*>(loadedTexture.compressedData.data()), zstdDataSize);
+        inFile.close();
+
+        auto start_decompress = std::chrono::high_resolution_clock::now();
+        auto decompressed = compressor.DecompressToRGBA(loadedTexture); // Use the newly loaded texture
+        auto end_decompress = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> diff_decompress = end_decompress - start_decompress;
+        std::cout << "Decompression finished in " << std::fixed << std::setprecision(2) << diff_decompress.count() << " seconds.\n";
+
 
         if (params.bcFormat == BCFormat::BC5) {
             std::cout << "Reconstructing Z-channel for BC5 normal map visualization...\n";
 
             // Iterate over each pixel in the decompressed RGBA data
             for (size_t i = 0; i < decompressed.size(); i += 4) {
-                // 1. Get the X and Y components from the Red and Green channels
-                // Normalize from [0, 255] range to [-1, 1] range
                 float x = (decompressed[i + 0] / 255.0f) * 2.0f - 1.0f;
                 float y = (decompressed[i + 1] / 255.0f) * 2.0f - 1.0f;
-
-                // 2. Calculate the Z component
                 float z_squared = 1.0f - x * x - y * y;
                 float z = (z_squared > 0.0f) ? sqrt(z_squared) : 0.0f;
-
-                // 3. Store the reconstructed Z in the Blue channel
-                // Convert from [-1, 1] (or [0,1] for z) back to [0, 255]
-                decompressed[i + 2] = static_cast<uint8_t>((z * 0.5f + 0.5f) * 255.0f);
-
-                // 4. Ensure Alpha is at full opacity
-                decompressed[i + 3] = 255;
+                decompressed[i + 2] = static_cast<uint8_t>(z * 255.0f); // Store Z in Blue
+                decompressed[i + 3] = 255; // Ensure Alpha is at full opacity
             }
         }
 
