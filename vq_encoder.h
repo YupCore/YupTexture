@@ -147,7 +147,6 @@ inline VQCodebook VQEncoder::BuildCodebook(const std::vector<uint8_t>& bcBlocks,
     // Step b, c, d: Choose remaining centroids based on distance
     for (uint32_t i = 1; i < config.codebookSize; ++i) {
         float current_sum = 0.0f;
-        // For each data point, find distance to the NEAREST, most recently added centroid
 #pragma omp parallel for reduction(+:current_sum)
         for (int64_t j = 0; j < numBlocks; ++j) {
             float d = RgbaBlockDistance_SIMD(rgbaBlocks[j].data(), rgbaCentroids[i - 1].data());
@@ -189,29 +188,43 @@ inline VQCodebook VQEncoder::BuildCodebook(const std::vector<uint8_t>& bcBlocks,
         // Finally, convert CIELAB centroids back to RGBA before compression.
     }
     else {
-        // --- RGB K-MEANS (SIMD Accelerated) ---
+        // --- OPTIMIZED RGB K-MEANS (SIMD Accelerated) ---
         std::vector<uint32_t> assignments(numBlocks, 0);
         for (uint32_t iter = 0; iter < config.maxIterations; ++iter) {
+            // Assignment step remains the same
 #pragma omp parallel for
             for (int64_t i = 0; i < numBlocks; ++i) {
                 float min_d = std::numeric_limits<float>::max();
+                uint32_t best_c = 0;
                 for (uint32_t c = 0; c < config.codebookSize; ++c) {
                     float d = RgbaBlockDistance_SIMD(rgbaBlocks[i].data(), rgbaCentroids[c].data());
-                    if (d < min_d) { min_d = d; assignments[i] = c; }
+                    if (d < min_d) {
+                        min_d = d;
+                        best_c = c;
+                    }
                 }
+                assignments[i] = best_c;
             }
 
-            std::vector<std::vector<float>> newCentroids(config.codebookSize, std::vector<float>(64, 0.0f));
+            // --- OPTIMIZED UPDATE STEP ---
+            // Use 64-bit integers for accumulation to prevent overflow and avoid float conversions
+            std::vector<std::vector<uint64_t>> newCentroids(config.codebookSize, std::vector<uint64_t>(64, 0));
             std::vector<uint32_t> counts(config.codebookSize, 0);
+
             for (size_t i = 0; i < numBlocks; ++i) {
                 uint32_t c_idx = assignments[i];
                 counts[c_idx]++;
-                for (size_t j = 0; j < 64; ++j) newCentroids[c_idx][j] += rgbaBlocks[i][j];
+                // Accumulate byte values directly
+                for (size_t j = 0; j < 64; ++j) {
+                    newCentroids[c_idx][j] += rgbaBlocks[i][j];
+                }
             }
+
 #pragma omp parallel for
             for (int64_t c = 0; c < config.codebookSize; ++c) {
                 if (counts[c] > 0) {
                     for (size_t j = 0; j < 64; ++j) {
+                        // Divide and cast back to uint8_t only once
                         rgbaCentroids[c][j] = static_cast<uint8_t>(newCentroids[c][j] / counts[c]);
                     }
                 }
@@ -234,19 +247,28 @@ inline std::vector<uint32_t> VQEncoder::QuantizeBlocks(const std::vector<uint8_t
     size_t numBlocks = bcBlocks.size() / codebook.blockSize;
     std::vector<uint32_t> indices(numBlocks);
 
+    // Decompress codebook to RGBA once
     std::vector<std::vector<uint8_t>> codebookRgba(codebook.codebookSize);
 #pragma omp parallel for
     for (int64_t i = 0; i < codebook.codebookSize; ++i) {
         codebookRgba[i] = DecompressSingleBlock(codebook.entries[i].data());
     }
 
+    // --- OPTIMIZATION: Decompress all input blocks to RGBA once ---
+    std::vector<std::vector<uint8_t>> rgbaBlocks(numBlocks);
 #pragma omp parallel for
     for (int64_t i = 0; i < numBlocks; ++i) {
-        auto rgbaBlock = DecompressSingleBlock(&bcBlocks[i * codebook.blockSize]);
+        rgbaBlocks[i] = DecompressSingleBlock(&bcBlocks[i * codebook.blockSize]);
+    }
+
+    // Now, quantization is a pure comparison loop without decompression
+#pragma omp parallel for
+    for (int64_t i = 0; i < numBlocks; ++i) {
         float minDist = std::numeric_limits<float>::max();
         uint32_t bestIdx = 0;
+        // The inner loop compares the pre-decompressed block with the pre-decompressed codebook
         for (uint32_t j = 0; j < codebook.codebookSize; ++j) {
-            float dist = RgbaBlockDistance_SIMD(rgbaBlock.data(), codebookRgba[j].data());
+            float dist = RgbaBlockDistance_SIMD(rgbaBlocks[i].data(), codebookRgba[j].data());
             if (dist < minDist) {
                 minDist = dist;
                 bestIdx = j;
