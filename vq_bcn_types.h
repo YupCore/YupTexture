@@ -38,12 +38,23 @@ struct BCBlockSize {
     }
 };
 
+// ADDED: Flags to indicate which compression steps were used.
+enum CompressionFlags : uint32_t {
+    COMPRESSION_FLAGS_DEFAULT = 0,
+    COMPRESSION_FLAGS_VQ_BYPASSED = 1 << 0, // VQ was skipped, payload is raw BCn data.
+    COMPRESSION_FLAGS_ZSTD_BYPASSED = 1 << 1, // ZSTD was skipped, payload is not zstd-compressed.
+};
+
 struct TextureInfo {
     uint32_t width;
     uint32_t height;
     uint32_t mipLevels;
     BCFormat format;
-    uint32_t storedCodebookEntries; // <-- ADDED: Needed for parsing the zstd stream
+    uint32_t storedCodebookEntries;
+    uint32_t compressionFlags; // MODIFIED: Bitfield using CompressionFlags
+
+    // ADDED: Default constructor for safety.
+    TextureInfo() : width(0), height(0), mipLevels(0), format(BCFormat::BC1), storedCodebookEntries(0), compressionFlags(COMPRESSION_FLAGS_DEFAULT) {}
 
     size_t GetBlocksX() const { return (width + 3) / 4; }
     size_t GetBlocksY() const { return (height + 3) / 4; }
@@ -65,7 +76,7 @@ struct CompressedTexture {
     TextureInfo info;
     VQCodebook codebook;
     std::vector<uint32_t> indices;  // Index per block
-    std::vector<uint8_t> compressedData;  // zstd compressed
+    std::vector<uint8_t> compressedData;  // Can be zstd compressed, or raw data if zstd is bypassed.
 
     size_t GetUncompressedSize() const {
         return info.GetTotalBlocks() * BCBlockSize::GetSize(info.format);
