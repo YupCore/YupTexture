@@ -6,10 +6,10 @@
 #include <zstd.h>
 #include <thread>
 #include <stdexcept> // For std::runtime_error
+#include <atomic>
 
 class VQBCnCompressor {
 private:
-    VQEncoder vqEncoder;
     BCnCompressor bcnCompressor;
 
     struct ZstdContext {
@@ -50,11 +50,11 @@ public:
         uint32_t height,
         const CompressionParams& params
     ) {
-        // Configure the VQ Encoder based on parameters
+        // --- 1. Configure Encoders ---
         VQEncoder::Config vqConfig;
         vqConfig.codebookSize = params.vqCodebookSize;
         vqConfig.metric = params.vqMetric;
-        vqEncoder = VQEncoder(vqConfig);
+        VQEncoder vqEncoder(vqConfig);
         vqEncoder.SetFormat(params.bcFormat);
 
         CompressedTexture result;
@@ -63,19 +63,35 @@ public:
         result.info.format = params.bcFormat;
         result.info.mipLevels = 1;
 
+        // --- 2. Initial BCn Compression ---
         auto bcData = bcnCompressor.CompressRGBA(
             rgbaData, width, height, params.bcFormat, params.bcQuality
         );
-
         if (bcData.empty()) {
             throw std::runtime_error("BCn compression failed");
         }
+        const size_t blockSize = BCBlockSize::GetSize(params.bcFormat);
+        const size_t numBlocks = bcData.size() / blockSize;
 
-        size_t blockSize = BCBlockSize::GetSize(params.bcFormat);
-        result.codebook = vqEncoder.BuildCodebook(bcData, blockSize);
-        result.indices = vqEncoder.QuantizeBlocks(bcData, result.codebook);
+        // --- OPTIMIZATION: The New, Efficient VQ Pipeline ---
 
-        // --- MODIFIED: Store actual codebook size for parsing and prepare for zstd ---
+        // 3. Decompress all blocks to RGBA *ONCE*
+        std::vector<std::vector<uint8_t>> rgbaBlocks(numBlocks);
+#pragma omp parallel for
+        for (int64_t i = 0; i < numBlocks; ++i) {
+            rgbaBlocks[i] = bcnCompressor.DecompressToRGBA(&bcData[i * blockSize], 4, 4, params.bcFormat);
+        }
+
+        // 4. Build the codebook. This function performs K-means and returns the compressed
+        //    codebook entries, while also outputting the final uncompressed RGBA centroids.
+        std::vector<std::vector<uint8_t>> rgbaCentroids;
+        result.codebook = vqEncoder.BuildCodebook(rgbaBlocks, rgbaCentroids);
+
+        // 5. Quantize the blocks. This is now a pure comparison function using the pre-decompressed
+        //    blocks and the final centroids from the build step.
+        result.indices = vqEncoder.QuantizeBlocks(rgbaBlocks, rgbaCentroids);
+
+        // --- 6. Final ZSTD Compression ---
         result.info.storedCodebookEntries = result.codebook.entries.size();
         size_t codebookDataSize = result.info.storedCodebookEntries * blockSize;
         size_t indicesDataSize = result.indices.size() * sizeof(uint32_t);
@@ -107,8 +123,6 @@ public:
         }
 
         result.compressedData.resize(compressedSize);
-
-        // --- ADDED: Clear original data so decompression must use the zstd stream ---
         result.codebook.entries.clear();
         result.indices.clear();
 
@@ -116,8 +130,6 @@ public:
     }
 
     std::vector<uint8_t> DecompressToRGBA(const CompressedTexture& compressed) {
-        // --- REWRITTEN: This function now handles ZSTD decompression first ---
-
         if (compressed.compressedData.empty()) {
             throw std::runtime_error("Compressed data stream is empty. Cannot decompress.");
         }
@@ -125,19 +137,36 @@ public:
         // 1. Decompress the ZSTD stream to get the payload (codebook + indices)
         size_t decompressedSize = ZSTD_getFrameContentSize(compressed.compressedData.data(), compressed.compressedData.size());
         if (decompressedSize == ZSTD_CONTENTSIZE_ERROR || decompressedSize == ZSTD_CONTENTSIZE_UNKNOWN) {
-            throw std::runtime_error("Failed to get ZSTD decompressed size.");
+            // Fallback for when content size isn't stored in the frame header
+            decompressedSize = compressed.info.GetTotalBlocks() * sizeof(uint32_t) + compressed.info.storedCodebookEntries * BCBlockSize::GetSize(compressed.info.format) * 2; // Estimate
         }
 
-        std::vector<uint8_t> uncompressedPayload(decompressedSize);
-        size_t const dSize = ZSTD_decompressDCtx(
-            zstdCtx->dctx,
-            uncompressedPayload.data(), uncompressedPayload.size(),
-            compressed.compressedData.data(), compressed.compressedData.size()
-        );
+        std::vector<uint8_t> uncompressedPayload;
+        size_t dSizeResult = ZSTD_CONTENTSIZE_UNKNOWN;
 
-        if (ZSTD_isError(dSize) || dSize != decompressedSize) {
-            throw std::runtime_error("Zstd decompression failed: " + std::string(ZSTD_getErrorName(dSize)));
+        // Loop to handle cases where the initial buffer is too small
+        for (int i = 0; i < 3; ++i) { // Try up to 3 times with increasing buffer size
+            uncompressedPayload.resize(decompressedSize);
+            dSizeResult = ZSTD_decompressDCtx(
+                zstdCtx->dctx,
+                uncompressedPayload.data(), uncompressedPayload.size(),
+                compressed.compressedData.data(), compressed.compressedData.size()
+            );
+            if (!ZSTD_isError(dSizeResult)) {
+                if (dSizeResult <= decompressedSize) break; // Success
+            }
+            else {
+                throw std::runtime_error("Zstd decompression failed: " + std::string(ZSTD_getErrorName(dSizeResult)));
+            }
+            if (ZSTD_getErrorCode(dSizeResult) == ZSTD_error_dstSize_tooSmall) {
+                decompressedSize *= 2; // Double buffer size and retry
+            }
         }
+
+        if (ZSTD_isError(dSizeResult)) {
+            throw std::runtime_error("Zstd decompression failed after retries: " + std::string(ZSTD_getErrorName(dSizeResult)));
+        }
+        uncompressedPayload.resize(dSizeResult);
 
         // 2. Parse the uncompressed payload into a local codebook and indices
         const size_t blockSize = BCBlockSize::GetSize(compressed.info.format);
@@ -146,7 +175,7 @@ public:
         const size_t totalBlocks = compressed.info.GetTotalBlocks();
         const size_t indicesDataSize = totalBlocks * sizeof(uint32_t);
 
-        if (decompressedSize != codebookDataSize + indicesDataSize) {
+        if (uncompressedPayload.size() != codebookDataSize + indicesDataSize) {
             throw std::runtime_error("Decompressed data size mismatch.");
         }
 
@@ -169,15 +198,15 @@ public:
 #pragma omp parallel for
         for (int64_t i = 0; i < totalBlocks; ++i) {
             uint32_t idx = localIndices[i];
-            // Note: Index validation is still a good idea
             if (idx >= localCodebook.entries.size()) {
-                std::fill_n(bcData.data() + i * blockSize, blockSize, 0); // Fill with black for invalid index
+                // Handle potential error case of an invalid index gracefully
+                std::fill_n(bcData.data() + i * blockSize, blockSize, 0);
                 continue;
             }
             std::memcpy(bcData.data() + i * blockSize, localCodebook.entries[idx].data(), blockSize);
         }
 
-        // 4. Decompress the BCn data to RGBA
+        // 4. Decompress the reconstructed BCn data to final RGBA
         return bcnCompressor.DecompressToRGBA(
             bcData.data(), compressed.info.width, compressed.info.height, compressed.info.format
         );
