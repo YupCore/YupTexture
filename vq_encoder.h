@@ -1,38 +1,40 @@
-// vq_encoder.h (Fully Revised)
+// vq_encoder.h (Optimized)
 
 #pragma once
 
 #include "vq_bcn_types.h"
-#include "bcn_compressor.h" // <-- ADDED DEPENDENCY
+#include "bcn_compressor.h"
 #include <random>
 #include <limits>
 #include <cmath>
 #include <algorithm>
 #include <execution>
+#include <numeric> // Required for std::iota
 
 class VQEncoder {
 public:
     struct Config {
         uint32_t codebookSize = 256;
-        uint32_t maxIterations = 20; // Reduced for performance
-        float convergenceThreshold = 1.0f; // Loosened for performance
-        bool useKMeansPlusPlus = true;
+        uint32_t maxIterations = 20;
+        float convergenceThreshold = 1.0f;
+        bool useKMeansPlusPlus = true; // This is now a more meaningful option
     };
 
 private:
     Config config;
     BCFormat bcFormat;
-    BCnCompressor bcnCompressor; // We need this for on-the-fly conversions
+    BCnCompressor bcnCompressor;
     std::mt19937 rng;
 
-    // Calculates distance between two 4x4 RGBA blocks (64 bytes each)
+    // Calculates squared Euclidean distance between two 4x4 RGBA blocks (64 bytes each)
     float RgbaBlockDistance(const uint8_t* rgbaA, const uint8_t* rgbaB) {
         float dist = 0.0f;
+        // This is a candidate for SIMD optimization for further performance gains
         for (size_t i = 0; i < 16 * 4; ++i) {
             float diff = static_cast<float>(rgbaA[i]) - static_cast<float>(rgbaB[i]);
             dist += diff * diff;
         }
-        return dist; // Using squared Euclidean distance is faster and sufficient for comparison
+        return dist;
     }
 
     // Decompresses a single BCn block to a 4x4 RGBA buffer
@@ -52,54 +54,44 @@ public:
 
     void SetFormat(BCFormat format) {
         bcFormat = format;
-	}
+    }
 
     VQCodebook BuildCodebook(const std::vector<uint8_t>& bcBlocks, size_t blockSize) {
         size_t numBlocks = bcBlocks.size() / blockSize;
         if (numBlocks < config.codebookSize) {
-            config.codebookSize = numBlocks;
+            config.codebookSize = numBlocks > 0 ? numBlocks : 1;
         }
 
-        VQCodebook codebook(blockSize, config.codebookSize);
-        codebook.entries.resize(config.codebookSize);
-
-        // --- K-MEANS LOGIC NOW OPERATES ON DECOMPRESSED RGBA DATA ---
-
-        // Step 1: Decompress all input blocks to RGBA for processing
+        // OPTIMIZATION 1: Decompress all blocks ONCE at the beginning.
         std::vector<std::vector<uint8_t>> rgbaBlocks(numBlocks);
 #pragma omp parallel for
         for (int64_t i = 0; i < numBlocks; ++i) {
             rgbaBlocks[i] = DecompressSingleBlock(&bcBlocks[i * blockSize]);
         }
 
-        // Step 2: Initialize codebook (e.g., random sampling)
+        // OPTIMIZATION 2: The k-means algorithm will now operate on RGBA centroids.
+        std::vector<std::vector<uint8_t>> rgbaCentroids(config.codebookSize);
+
+        // --- Initialize Centroids (Random Sampling) ---
         std::vector<size_t> initialIndices(numBlocks);
         std::iota(initialIndices.begin(), initialIndices.end(), 0);
         std::shuffle(initialIndices.begin(), initialIndices.end(), rng);
         for (uint32_t i = 0; i < config.codebookSize; ++i) {
-            codebook.entries[i].assign(
-                bcBlocks.begin() + initialIndices[i] * blockSize,
-                bcBlocks.begin() + (initialIndices[i] + 1) * blockSize
-            );
+            rgbaCentroids[i] = rgbaBlocks[initialIndices[i]];
         }
 
-        // Step 3: K-means iterations
+        // --- K-means Iterations ---
         std::vector<uint32_t> assignments(numBlocks);
-        std::vector<std::vector<uint8_t>> codebookRgba(config.codebookSize);
 
         for (uint32_t iter = 0; iter < config.maxIterations; ++iter) {
-            // Decompress current codebook for distance checks
-            for (uint32_t i = 0; i < config.codebookSize; ++i) {
-                codebookRgba[i] = DecompressSingleBlock(codebook.entries[i].data());
-            }
-
-            // Assignment step (in RGBA space)
+            // Assignment step: Assign each block to the nearest RGBA centroid.
+            // No per-iteration decompression is needed here.
 #pragma omp parallel for
             for (int64_t i = 0; i < numBlocks; ++i) {
                 float minDist = std::numeric_limits<float>::max();
                 uint32_t bestIdx = 0;
                 for (uint32_t j = 0; j < config.codebookSize; ++j) {
-                    float dist = RgbaBlockDistance(rgbaBlocks[i].data(), codebookRgba[j].data());
+                    float dist = RgbaBlockDistance(rgbaBlocks[i].data(), rgbaCentroids[j].data());
                     if (dist < minDist) {
                         minDist = dist;
                         bestIdx = j;
@@ -108,39 +100,51 @@ public:
                 assignments[i] = bestIdx;
             }
 
-            // Update step (averaging in RGBA space, then re-compressing)
-            std::vector<std::vector<float>> centroids(config.codebookSize, std::vector<float>(16 * 4, 0.0f));
+            // Update step: Recalculate centroids by averaging in RGBA space.
+            // No per-iteration re-compression is needed here.
+            std::vector<std::vector<float>> newCentroids(config.codebookSize, std::vector<float>(16 * 4, 0.0f));
             std::vector<uint32_t> counts(config.codebookSize, 0);
 
             for (size_t i = 0; i < numBlocks; ++i) {
                 uint32_t idx = assignments[i];
                 counts[idx]++;
                 for (size_t j = 0; j < 16 * 4; ++j) {
-                    centroids[idx][j] += static_cast<float>(rgbaBlocks[i][j]);
+                    newCentroids[idx][j] += static_cast<float>(rgbaBlocks[i][j]);
                 }
             }
 
 #pragma omp parallel for
             for (int64_t i = 0; i < config.codebookSize; ++i) {
                 if (counts[i] > 0) {
-                    std::vector<uint8_t> avgRgbaBlock(16 * 4);
                     for (size_t j = 0; j < 16 * 4; ++j) {
-                        float avgValue = centroids[i][j] / counts[i];
-                        avgRgbaBlock[j] = static_cast<uint8_t>(std::min(255.0f, std::max(0.0f, avgValue)));
+                        float avgValue = newCentroids[i][j] / counts[i];
+                        rgbaCentroids[i][j] = static_cast<uint8_t>(std::min(255.0f, std::max(0.0f, avgValue)));
                     }
-                    // Re-compress the new average RGBA block to get the new BCn codebook entry
-                    codebook.entries[i] = CompressSingleBlock(avgRgbaBlock.data());
+                }
+                else {
+                    // If a centroid has no points, re-initialize it to a random block
+                    // to prevent it from becoming empty.
+                    rgbaCentroids[i] = rgbaBlocks[initialIndices[(iter + i) % numBlocks]];
                 }
             }
         }
-        return codebook;
+
+        // OPTIMIZATION 3: Compress the final RGBA centroids to BCn format ONCE at the end.
+        VQCodebook finalCodebook(blockSize, config.codebookSize);
+        finalCodebook.entries.resize(config.codebookSize);
+#pragma omp parallel for
+        for (int64_t i = 0; i < config.codebookSize; ++i) {
+            finalCodebook.entries[i] = CompressSingleBlock(rgbaCentroids[i].data());
+        }
+
+        return finalCodebook;
     }
 
+    // QuantizeBlocks remains the same, as it was already efficient.
     std::vector<uint32_t> QuantizeBlocks(const std::vector<uint8_t>& bcBlocks, const VQCodebook& codebook) {
         size_t numBlocks = bcBlocks.size() / codebook.blockSize;
         std::vector<uint32_t> indices(numBlocks);
 
-        // Decompress codebook once for faster comparisons
         std::vector<std::vector<uint8_t>> codebookRgba(codebook.codebookSize);
         for (uint32_t i = 0; i < codebook.codebookSize; ++i) {
             codebookRgba[i] = DecompressSingleBlock(codebook.entries[i].data());

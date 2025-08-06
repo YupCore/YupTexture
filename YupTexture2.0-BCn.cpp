@@ -6,6 +6,8 @@
 #include <filesystem>
 #include <string>
 
+namespace fs = std::filesystem;
+
 #define __STDC_LIB_EXT1__
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
@@ -216,7 +218,13 @@ int main(int argc, char** argv) {
                         output.width = image.width;
                         output.height = image.height;
                         output.data = std::move(decompressed);
-                        output.Save("output\\" + file.path().stem().string() + "_bc1.png");
+                        // Construct the filename first
+                        fs::path filename = file.path().stem().string() + "_bc1.png";
+
+                        // Then construct the full path
+                        fs::path fullPath = fs::current_path() / "output" / filename;
+						std::cout << "Saving output to: " << fullPath.string() << std::endl;
+                        output.Save(fullPath.string().c_str());
                     }
                     break;
                 case SimpleTextureType::Normal:
@@ -239,7 +247,13 @@ int main(int argc, char** argv) {
                         output.width = image.width;
                         output.height = image.height;
                         output.data = std::move(decompressed);
-                        output.Save("output\\" + file.path().stem().string() + "_bc5.png");
+                        // Construct the filename first
+                        fs::path filename = file.path().stem().string() + "_bc5.png";
+
+                        // Then construct the full path
+                        fs::path fullPath = fs::current_path() / "output" / filename;
+                        std::cout << "Saving output to: " << fullPath.string() << std::endl;
+                        output.Save(fullPath.string().c_str());
                     }
                     break;
                 case SimpleTextureType::Grayscale:
@@ -262,7 +276,13 @@ int main(int argc, char** argv) {
                         output.width = image.width;
                         output.height = image.height;
                         output.data = std::move(decompressed);
-                        output.Save("output\\" + file.path().stem().string() + "_bc4.bin");
+                        // Construct the filename first
+                        fs::path filename = file.path().stem().string() + "_bc4.png";
+
+                        // Then construct the full path
+                        fs::path fullPath = fs::current_path() / "output" / filename;
+                        std::cout << "Saving output to: " << fullPath.string() << std::endl;
+                        output.Save(fullPath.string().c_str());
                     }
                     break;
                 }
