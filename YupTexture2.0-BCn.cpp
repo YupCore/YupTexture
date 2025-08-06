@@ -25,23 +25,15 @@ public:
 
     bool Load(const std::string& filename) {
         int w, h, c;
-        // Force load as RGBA
         uint8_t* pixels = stbi_load(filename.c_str(), &w, &h, &c, 4);
         if (!pixels) {
             std::cerr << "Failed to load image: " << stbi_failure_reason() << std::endl;
             return false;
         }
-
-        width = w;
-        height = h;
-        channels = 4;  // We forced RGBA
-
-        size_t dataSize = width * height * 4;
-        data.resize(dataSize);
-        std::memcpy(data.data(), pixels, dataSize);
-
+        width = w; height = h; channels = 4;
+        size_t dataSize = (size_t)width * height * 4;
+        data.assign(pixels, pixels + dataSize);
         stbi_image_free(pixels);
-
         std::cout << "Loaded " << filename << " (" << width << "x" << height
             << ", original channels: " << c << ")" << std::endl;
         return true;
@@ -51,119 +43,56 @@ public:
         std::filesystem::path path(filename);
         std::string ext = path.extension().string();
         std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-
         int result = 0;
-        if (ext == ".png") {
-            result = stbi_write_png(filename.c_str(), width, height, 4,
-                data.data(), width * 4);
-        }
-        else if (ext == ".jpg" || ext == ".jpeg") {
-            result = stbi_write_jpg(filename.c_str(), width, height, 4,
-                data.data(), 95);  // 95% quality
-        }
-        else if (ext == ".bmp") {
-            result = stbi_write_bmp(filename.c_str(), width, height, 4,
-                data.data());
-        }
-        else if (ext == ".tga") {
-            result = stbi_write_tga(filename.c_str(), width, height, 4,
-                data.data());
-        }
-        else {
-            std::cerr << "Unsupported format: " << ext << std::endl;
-            return false;
-        }
-
-        if (result == 0) {
-            std::cerr << "Failed to save image: " << filename << std::endl;
-            return false;
-        }
-
+        if (ext == ".png") result = stbi_write_png(filename.c_str(), width, height, 4, data.data(), width * 4);
+        else if (ext == ".jpg" || ext == ".jpeg") result = stbi_write_jpg(filename.c_str(), width, height, 4, data.data(), 95);
+        else if (ext == ".bmp") result = stbi_write_bmp(filename.c_str(), width, height, 4, data.data());
+        else if (ext == ".tga") result = stbi_write_tga(filename.c_str(), width, height, 4, data.data());
+        else { std::cerr << "Unsupported format: " << ext << std::endl; return false; }
+        if (result == 0) { std::cerr << "Failed to save image: " << filename << std::endl; return false; }
         std::cout << "Saved " << filename << std::endl;
         return true;
     }
 };
 
-// Enum for texture types
-enum SimpleTextureType {
-    Albedo,
-    Normal,
-    Grayscale, // AO, Roughness, Specular, etc.
-    Unknown
-};
+enum SimpleTextureType { Albedo, Normal, Grayscale, Unknown };
 
-// Structure to hold image statistics
 struct ImageStats {
     double mean[4] = { 0.0, 0.0, 0.0, 0.0 };
     double variance[4] = { 0.0, 0.0, 0.0, 0.0 };
     bool isGrayscale = true;
-    float blueDominance = 0.0f; // For normal map detection
+    float blueDominance = 0.0f;
 };
 
 ImageStats computeImageStats(const unsigned char* data, int width, int height, int channels) {
     ImageStats stats;
-    long pixelCount = width * height;
+    long pixelCount = (long)width * height;
     if (pixelCount == 0) return stats;
-
     std::vector<double> channelSums(channels, 0.0);
-    std::vector<double> channelSumsSq(channels, 0.0);
     long blueHighCount = 0;
-
-    // First pass: compute means and check grayscale
     for (int i = 0; i < pixelCount; ++i) {
-        bool pixelIsGrayscale = true;
-        if (channels >= 3) {
-            if (std::abs(data[i * channels + 0] - data[i * channels + 1]) > 10 || std::abs(data[i * channels + 1] - data[i * channels + 2]) > 10) {
-                pixelIsGrayscale = false;
-            }
+        if (channels >= 3 && (std::abs(data[i * 4 + 0] - data[i * 4 + 1]) > 10 || std::abs(data[i * 4 + 1] - data[i * 4 + 2]) > 10)) {
+            stats.isGrayscale = false;
         }
-        if (!pixelIsGrayscale) stats.isGrayscale = false;
-
-        for (int c = 0; c < channels; ++c) {
-            channelSums[c] += data[i * channels + c];
-        }
-        if (channels >= 3 && data[i * channels + 2] > 200) { // Blue channel > ~0.8
-            blueHighCount++;
-        }
+        for (int c = 0; c < channels; ++c) channelSums[c] += data[i * channels + c];
+        if (channels >= 3 && data[i * channels + 2] > 200) blueHighCount++;
     }
-
-    for (int c = 0; c < channels; ++c) {
-        stats.mean[c] = channelSums[c] / pixelCount;
-    }
-
-    // Second pass: compute variance
+    for (int c = 0; c < channels; ++c) stats.mean[c] = channelSums[c] / pixelCount;
     for (int i = 0; i < pixelCount; ++i) {
         for (int c = 0; c < channels; ++c) {
             double diff = data[i * channels + c] - stats.mean[c];
             stats.variance[c] += diff * diff;
         }
     }
-    for (int c = 0; c < channels; ++c) {
-        stats.variance[c] = stats.variance[c] / pixelCount;
-    }
-
+    for (int c = 0; c < channels; ++c) stats.variance[c] /= pixelCount;
     stats.blueDominance = static_cast<float>(blueHighCount) / pixelCount;
-
     return stats;
 }
 
 SimpleTextureType classifyTexture(const ImageStats& stats, int channels) {
-    // Grayscale texture (AO, Roughness, etc.)
-    // Check if variance is low on color channels
-    if (channels >= 3 && stats.isGrayscale && stats.variance[0] < 50.0 && stats.variance[1] < 50.0) {
-        return SimpleTextureType::Grayscale;
-    }
-
-    // Normal map: high blue channel, low variance in blue
-    if (channels >= 3 && stats.blueDominance > 0.8f && stats.mean[2] > 128.0f && stats.variance[2] < 500.0) {
-        return SimpleTextureType::Normal;
-    }
-
-    // Albedo: not grayscale, not a normal map
-    if (channels >= 3 && !stats.isGrayscale) {
-        return SimpleTextureType::Albedo;
-    }
-
+    if (channels >= 3 && stats.isGrayscale && stats.variance[0] < 50.0 && stats.variance[1] < 50.0) return SimpleTextureType::Grayscale;
+    if (channels >= 3 && stats.blueDominance > 0.8f && stats.mean[2] > 128.0f && stats.variance[2] < 500.0) return SimpleTextureType::Normal;
+    if (channels >= 3 && !stats.isGrayscale) return SimpleTextureType::Albedo;
     return SimpleTextureType::Unknown;
 }
 
@@ -176,46 +105,48 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
     SimpleTextureType type = classifyTexture(stats, image.channels);
     VQBCnCompressor::CompressionParams params;
     std::string suffix;
+    std::string metric_str;
 
-    // --- CONFIGURE COMPRESSION BASED ON TEXTURE TYPE ---
-    params.bcQuality = 1.0f; // Always use highest quality for the initial BCn compression
-    params.zstdLevel = 20;   // High ZSTD level for maximum final compression
-    params.vqMetric = VQEncoder::DistanceMetric::PERCEPTUAL_LAB; // Use highest quality metric by default
+    params.bcQuality = 1.0f;
+    params.zstdLevel = 20;
 
-    // OPTIMIZATION: Adaptive codebook sizing based on texture type.
-    // Simple textures don't need a large codebook, saving space and speeding up compression.
-    // Complex textures get a larger codebook for better quality.
+    // OPTIMIZATION: Choose the VQ metric based on texture type for a better speed/quality trade-off.
+    // Use the expensive (but high quality) LAB metric only for color maps.
     switch (type) {
     case Albedo:
         std::cout << "Texture Type: Albedo (Using BC1 for color)\n";
         params.bcFormat = BCFormat::BC1;
-        params.vqCodebookSize = 512; // High detail, large codebook
-        suffix = "_bc1_lab";
+        params.vqCodebookSize = 512;
+        params.vqMetric = VQEncoder::DistanceMetric::PERCEPTUAL_LAB; // Highest quality for color
+        metric_str = "_lab";
         break;
     case Normal:
         std::cout << "Texture Type: Normal (Using BC5 for two-channel data)\n";
         params.bcFormat = BCFormat::BC5;
-        params.vqCodebookSize = 256; // Medium detail
-        suffix = "_bc5_lab";
+        params.vqCodebookSize = 256;
+        params.vqMetric = VQEncoder::DistanceMetric::RGB_SIMD; // RGB is faster and sufficient
+        metric_str = "_rgb";
         break;
     case Grayscale:
         std::cout << "Texture Type: Grayscale (Using BC4 for single-channel data)\n";
         params.bcFormat = BCFormat::BC4;
-        params.vqCodebookSize = 128; // Low detail, small codebook
-        suffix = "_bc4_lab";
+        params.vqCodebookSize = 128;
+        params.vqMetric = VQEncoder::DistanceMetric::RGB_SIMD; // RGB is faster and sufficient
+        metric_str = "_rgb";
         break;
     default:
-        std::cout << "Texture Type: Unknown (Defaulting to BC1, medium codebook)\n";
+        std::cout << "Texture Type: Unknown (Defaulting to BC1)\n";
         params.bcFormat = BCFormat::BC1;
         params.vqCodebookSize = 256;
-        suffix = "_bc1_lab_unknown";
+        params.vqMetric = VQEncoder::DistanceMetric::RGB_SIMD; // Default to faster RGB
+        metric_str = "_rgb_unknown";
         break;
     }
-    std::cout << "Adaptive Codebook Size: " << params.vqCodebookSize << std::endl;
 
+    suffix = "_bc" + std::to_string(static_cast<int>(params.bcFormat)) + metric_str;
+    std::cout << "Adaptive Settings: Codebook Size=" << params.vqCodebookSize << ", Metric=" << (params.vqMetric == VQEncoder::DistanceMetric::PERCEPTUAL_LAB ? "PERCEPTUAL_LAB" : "RGB_SIMD") << std::endl;
 
     try {
-        // --- COMPRESS and SAVE ---
         auto start_compress = std::chrono::high_resolution_clock::now();
         auto compressed = compressor.Compress(image.data.data(), image.width, image.height, params);
         auto end_compress = std::chrono::high_resolution_clock::now();
@@ -224,20 +155,14 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
 
         std::string out_name_bin = "output/" + filePath.stem().string() + suffix + ".yupt2";
         std::ofstream outFile(out_name_bin, std::ios::binary);
-        if (!outFile) {
-            throw std::runtime_error("Failed to open " + out_name_bin + " for writing.");
-        }
+        if (!outFile) throw std::runtime_error("Failed to open " + out_name_bin + " for writing.");
         outFile.write(reinterpret_cast<const char*>(&compressed.info), sizeof(TextureInfo));
         outFile.write(reinterpret_cast<const char*>(compressed.compressedData.data()), compressed.compressedData.size());
         outFile.close();
         std::cout << "Saved compressed file: " << out_name_bin << std::endl;
 
-        // --- LOAD and DECOMPRESS (to verify correctness of the full pipeline) ---
         std::ifstream inFile(out_name_bin, std::ios::binary);
-        if (!inFile) {
-            throw std::runtime_error("Failed to open " + out_name_bin + " for reading.");
-        }
-
+        if (!inFile) throw std::runtime_error("Failed to open " + out_name_bin + " for reading.");
         CompressedTexture loadedTexture;
         inFile.read(reinterpret_cast<char*>(&loadedTexture.info), sizeof(TextureInfo));
         inFile.seekg(0, std::ios::end);
@@ -253,44 +178,35 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
         std::chrono::duration<double> diff_decompress = end_decompress - start_decompress;
         std::cout << "Decompression finished in " << std::fixed << std::setprecision(2) << diff_decompress.count() << " seconds.\n";
 
-
         if (params.bcFormat == BCFormat::BC5) {
             std::cout << "Reconstructing Z-channel for BC5 normal map visualization...\n";
             for (size_t i = 0; i < decompressed.size(); i += 4) {
-                float x = (decompressed[i + 0] / 255.0f) * 2.0f - 1.0f; // Red channel is X
-                float y = (decompressed[i + 1] / 255.0f) * 2.0f - 1.0f; // Green channel is Y
+                float x = (decompressed[i + 0] / 255.0f) * 2.0f - 1.0f;
+                float y = (decompressed[i + 1] / 255.0f) * 2.0f - 1.0f;
                 float z_squared = 1.0f - x * x - y * y;
                 float z = (z_squared > 0.0f) ? sqrt(z_squared) : 0.0f;
-                decompressed[i + 2] = static_cast<uint8_t>((z * 0.5f + 0.5f) * 255.0f); // Reconstruct Z into Blue
-                decompressed[i + 3] = 255; // Full alpha
+                decompressed[i + 2] = static_cast<uint8_t>((z * 0.5f + 0.5f) * 255.0f);
+                decompressed[i + 3] = 255;
             }
         }
-
         Image output;
-        output.width = image.width;
-        output.height = image.height;
-        output.channels = 4;
+        output.width = image.width; output.height = image.height; output.channels = 4;
         output.data = std::move(decompressed);
         output.Save("output/" + filePath.stem().string() + suffix + ".png");
-
     }
     catch (const std::exception& e) {
         std::cerr << "An error occurred during processing: " << e.what() << std::endl;
     }
 }
 
-
 int main(int argc, char** argv) {
     try {
         VQBCnCompressor compressor;
         std::filesystem::create_directory("output");
-
         std::string test_dir = "test_texture_set";
         if (!fs::exists(test_dir)) {
-            std::cerr << "Error: Test directory '" << test_dir << "' not found." << std::endl;
-            return 1;
+            std::cerr << "Error: Test directory '" << test_dir << "' not found." << std::endl; return 1;
         }
-
         for (const auto& file : std::filesystem::directory_iterator(test_dir)) {
             std::string ext = file.path().extension().string();
             std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
