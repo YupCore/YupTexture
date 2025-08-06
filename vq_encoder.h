@@ -75,7 +75,7 @@ private:
 
     // --- Distance Functions ---
 
-    // OPTIMIZATION: High-performance AVX2 implementation for RGB distance
+    //  High-performance AVX2 implementation for RGB distance
     float RgbaBlockDistance_SIMD(const uint8_t* rgbaA, const uint8_t* rgbaB) const {
         __m256i diff_sum = _mm256_setzero_si256();
         for (size_t i = 0; i < 64; i += 32) {
@@ -254,7 +254,7 @@ inline std::vector<uint32_t> VQEncoder::QuantizeBlocks(const std::vector<uint8_t
         codebookRgba[i] = DecompressSingleBlock(codebook.entries[i].data());
     }
 
-    // --- OPTIMIZATION: Decompress all input blocks to RGBA once ---
+    // --- Decompress all input blocks to RGBA once ---
     std::vector<std::vector<uint8_t>> rgbaBlocks(numBlocks);
 #pragma omp parallel for
     for (int64_t i = 0; i < numBlocks; ++i) {
