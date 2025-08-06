@@ -169,130 +169,110 @@ SimpleTextureType classifyTexture(const ImageStats& stats, int channels) {
     return SimpleTextureType::Unknown;
 }
 
-int main(int argc, char** argv) {
+void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compressor) {
+    std::cout << "\n--- Processing: " << filePath.filename() << " ---\n";
+    Image image;
+    if (!image.Load(filePath.string())) return;
+
+    ImageStats stats = computeImageStats(image.data.data(), image.width, image.height, image.channels);
+    SimpleTextureType type = classifyTexture(stats, image.channels);
+    VQBCnCompressor::CompressionParams params;
+    std::string suffix;
+
+    // --- CONFIGURE COMPRESSION BASED ON TEXTURE TYPE ---
+    params.vqCodebookSize = 512;
+    params.bcQuality = 1.0f;
+    // USE THE HIGHEST QUALITY METRIC BY DEFAULT
+    params.vqMetric = VQEncoder::DistanceMetric::PERCEPTUAL_LAB;
+
+    switch (type) {
+    case Albedo:
+        std::cout << "Texture Type: Albedo (Using BC1/BC7 for high quality color)\n";
+        params.bcFormat = BCFormat::BC1; 
+        suffix = "_bc1_lab";
+        break;
+    case Normal:
+        std::cout << "Texture Type: Normal (Using BC5 for two-channel data)\n";
+        params.bcFormat = BCFormat::BC5;
+        suffix = "_bc5_lab";
+        break;
+    case Grayscale:
+        std::cout << "Texture Type: Grayscale (Using BC4 for single-channel data)\n";
+        params.bcFormat = BCFormat::BC4;
+        suffix = "_bc4_lab";
+        break;
+    default:
+        std::cout << "Texture Type: Unknown (Defaulting to BC1)\n";
+        params.bcFormat = BCFormat::BC1;
+        suffix = "_bc1_lab_unknown";
+        break;
+    }
+
     try {
+        auto start = std::chrono::high_resolution_clock::now();
+        auto compressed = compressor.Compress(image.data.data(), image.width, image.height, params);
+        auto end = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<double> diff = end - start;
+        std::cout << "Compression finished in " << std::fixed << std::setprecision(2) << diff.count() << " seconds.\n";
 
-        VQEncoder::Config vqConfig;
-        vqConfig.codebookSize = 512;
-        VQBCnCompressor compressor(vqConfig);
+        std::string out_name_bin = "output/" + filePath.stem().string() + suffix + ".bin";
+        std::ofstream outFile(out_name_bin, std::ios::binary);
+        outFile.write(reinterpret_cast<const char*>(compressed.compressedData.data()), compressed.compressedData.size());
+        outFile.close();
 
-        for(auto file : std::filesystem::directory_iterator("test_texture_set")) {
-            if (file.path().extension() == ".png" || file.path().extension() == ".jpg" ||
-                file.path().extension() == ".jpeg" || file.path().extension() == ".bmp" ||
-                file.path().extension() == ".tga") {
-                std::cout << "Found image: " << file.path().filename() << std::endl;
+        auto decompressed = compressor.DecompressToRGBA(compressed);
 
-                Image image;
-				image.Load(file.path().string());
+        if (params.bcFormat == BCFormat::BC5) {
+            std::cout << "Reconstructing Z-channel for BC5 normal map visualization...\n";
 
-                ImageStats stats = computeImageStats(image.data.data(), image.width, image.height, image.channels);
-                SimpleTextureType type = classifyTexture(stats, image.channels);
+            // Iterate over each pixel in the decompressed RGBA data
+            for (size_t i = 0; i < decompressed.size(); i += 4) {
+                // 1. Get the X and Y components from the Red and Green channels
+                // Normalize from [0, 255] range to [-1, 1] range
+                float x = (decompressed[i + 0] / 255.0f) * 2.0f - 1.0f;
+                float y = (decompressed[i + 1] / 255.0f) * 2.0f - 1.0f;
 
-                std::cout << "Image Stats:\n";
-                std::cout << "Mean (R,G,B,A): " << stats.mean[0] << ", " << stats.mean[1] << ", " << stats.mean[2];
-                if (image.channels == 4) std::cout << ", " << stats.mean[3];
-                std::cout << "\nVariance (R,G,B,A): " << stats.variance[0] << ", " << stats.variance[1] << ", " << stats.variance[2];
-                if (image.channels == 4) std::cout << ", " << stats.variance[3];
-                std::cout << "\nBlue Dominance: " << stats.blueDominance << "\n";
-                std::cout << "Is Grayscale: " << (stats.isGrayscale ? "Yes" : "No") << "\n";
+                // 2. Calculate the Z component
+                float z_squared = 1.0f - x * x - y * y;
+                float z = (z_squared > 0.0f) ? sqrt(z_squared) : 0.0f;
 
-                switch (type) {
-                case SimpleTextureType::Unknown:
-                case SimpleTextureType::Albedo:
-                    std::cout << "Texture Type: Albedo\n";
-                    {
-                        VQBCnCompressor::CompressionParams params;
-                        params.bcFormat = BCFormat::BC1;
-                        params.vqCodebookSize = 512;
-                        params.bcQuality = 1.0f;
+                // 3. Store the reconstructed Z in the Blue channel
+                // Convert from [-1, 1] (or [0,1] for z) back to [0, 255]
+                decompressed[i + 2] = static_cast<uint8_t>((z * 0.5f + 0.5f) * 255.0f);
 
-                        auto compressed = compressor.Compress(image.data.data(),
-                            image.width, image.height, params);
-                        std::ofstream outFile("output\\" + file.path().stem().string() + "_bc1.bin", std::ios::binary);
-                        outFile.write(reinterpret_cast<const char*>(compressed.compressedData.data()),
-                            compressed.compressedData.size());
-                        outFile.close();
-                        auto decompressed = compressor.DecompressToRGBA(compressed);
-
-                        Image output;
-                        output.width = image.width;
-                        output.height = image.height;
-                        output.data = std::move(decompressed);
-                        // Construct the filename first
-                        fs::path filename = file.path().stem().string() + "_bc1.png";
-
-                        // Then construct the full path
-                        fs::path fullPath = fs::current_path() / "output" / filename;
-						std::cout << "Saving output to: " << fullPath.string() << std::endl;
-                        output.Save(fullPath.string().c_str());
-                    }
-                    break;
-                case SimpleTextureType::Normal:
-                    std::cout << "Texture Type: Normal\n";
-                    {
-                        VQBCnCompressor::CompressionParams params;
-                        params.bcFormat = BCFormat::BC5;
-                        params.vqCodebookSize = 512;
-                        params.bcQuality = 1.0f;
-
-                        auto compressed = compressor.Compress(image.data.data(),
-                            image.width, image.height, params);
-                        std::ofstream outFile("output\\" + file.path().stem().string() + "_bc5.bin", std::ios::binary);
-                        outFile.write(reinterpret_cast<const char*>(compressed.compressedData.data()),
-                            compressed.compressedData.size());
-                        outFile.close();
-                        auto decompressed = compressor.DecompressToRGBA(compressed);
-
-                        Image output;
-                        output.width = image.width;
-                        output.height = image.height;
-                        output.data = std::move(decompressed);
-                        // Construct the filename first
-                        fs::path filename = file.path().stem().string() + "_bc5.png";
-
-                        // Then construct the full path
-                        fs::path fullPath = fs::current_path() / "output" / filename;
-                        std::cout << "Saving output to: " << fullPath.string() << std::endl;
-                        output.Save(fullPath.string().c_str());
-                    }
-                    break;
-                case SimpleTextureType::Grayscale:
-                    std::cout << "Texture Type: Grayscale (AO/Roughness/Specular/etc.)\n";
-                    {
-                        VQBCnCompressor::CompressionParams params;
-                        params.bcFormat = BCFormat::BC4;
-                        params.vqCodebookSize = 512;
-                        params.bcQuality = 1.0f;
-
-                        auto compressed = compressor.Compress(image.data.data(),
-                            image.width, image.height, params);
-                        std::ofstream outFile("output\\" + file.path().stem().string() + "_bc4.bin", std::ios::binary);
-                        outFile.write(reinterpret_cast<const char*>(compressed.compressedData.data()),
-                            compressed.compressedData.size());
-                        outFile.close();
-                        auto decompressed = compressor.DecompressToRGBA(compressed);
-
-                        Image output;
-                        output.width = image.width;
-                        output.height = image.height;
-                        output.data = std::move(decompressed);
-                        // Construct the filename first
-                        fs::path filename = file.path().stem().string() + "_bc4.png";
-
-                        // Then construct the full path
-                        fs::path fullPath = fs::current_path() / "output" / filename;
-                        std::cout << "Saving output to: " << fullPath.string() << std::endl;
-                        output.Save(fullPath.string().c_str());
-                    }
-                    break;
-                }
+                // 4. Ensure Alpha is at full opacity
+                decompressed[i + 3] = 255;
             }
-		}
+        }
+
+        Image output;
+        output.width = image.width;
+        output.height = image.height;
+        output.data = std::move(decompressed);
+        output.Save("output/" + filePath.stem().string() + suffix + ".png");
+
     }
     catch (const std::exception& e) {
-        std::cerr << "Error: " << e.what() << std::endl;
+        std::cerr << "An error occurred during processing: " << e.what() << std::endl;
+    }
+}
+
+
+int main(int argc, char** argv) {
+    try {
+        VQBCnCompressor compressor;
+        std::filesystem::create_directory("output");
+
+        for (const auto& file : std::filesystem::directory_iterator("test_texture_set")) {
+            std::string ext = file.path().extension().string();
+            if (ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".bmp" || ext == ".tga") {
+                ProcessImage(file.path(), compressor);
+            }
+        }
+    }
+    catch (const std::exception& e) {
+        std::cerr << "A critical error occurred: " << e.what() << std::endl;
         return 1;
     }
-
     return 0;
 }
