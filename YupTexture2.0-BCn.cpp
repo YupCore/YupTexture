@@ -110,7 +110,6 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
     params.bcQuality = 1.0f;
     params.zstdLevel = 10;
 	params.useMultithreading = true;
-	params.vqFastModeSampleRatio = 0.8f; // Use 80% of the original pixels for fast mode
 
     switch (type) {
     case Albedo:
