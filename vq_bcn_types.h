@@ -45,6 +45,7 @@ enum CompressionFlags : uint32_t {
     COMPRESSION_FLAGS_VQ_BYPASSED = 1 << 0, // VQ was skipped, payload is raw BCn data.
     COMPRESSION_FLAGS_ZSTD_BYPASSED = 1 << 1, // ZSTD was skipped, payload is not zstd-compressed.
     COMPRESSION_FLAGS_IS_HDR = 1 << 2,      // The source texture was HDR (float data).
+    COMPRESSION_FLAGS_USES_PQ = 1 << 3
 };
 
 struct TextureInfo {
@@ -53,8 +54,17 @@ struct TextureInfo {
     BCFormat format;
     uint32_t storedCodebookEntries;
     uint32_t compressionFlags;
+    uint32_t vq_pq_subvectors;      // Number of sub-vectors used in PQ
 
-    TextureInfo() : width(0), height(0), format(BCFormat::BC1), storedCodebookEntries(0), compressionFlags(COMPRESSION_FLAGS_DEFAULT) {}
+
+    TextureInfo() :
+        width(0),
+        height(0),
+        format(BCFormat::BC1),
+        storedCodebookEntries(0),
+        compressionFlags(COMPRESSION_FLAGS_DEFAULT),
+        vq_pq_subvectors(0)
+    { }
 
     size_t GetBlocksX() const { return (width + 3) / 4; }
     size_t GetBlocksY() const { return (height + 3) / 4; }

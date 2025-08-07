@@ -234,7 +234,7 @@ public:
             throw std::runtime_error("HDR compression only supports BC6H format.");
         }
 
-        // --- If VQ is disabled for HDR, use the simple bypass path ---
+        // --- Handle VQ Bypass ---
         if (params.bypassVQ) {
             CompressedTexture result;
             result.info.width = width;
@@ -259,21 +259,22 @@ public:
             return result;
         }
 
-        // --- HDR VQ Path ---
+        // --- HDR VQ Path Setup ---
         CompressedTexture result;
         result.info.width = width;
         result.info.height = height;
         result.info.format = params.bcFormat;
         result.info.compressionFlags = COMPRESSION_FLAGS_IS_HDR;
 
-        // Setup VQ
         VQEncoder::Config vqConfig;
         vqConfig.SetQuality(params.quality);
         vqConfig.min_cb_power = params.vq_min_cb_power;
         vqConfig.max_cb_power = params.vq_max_cb_power;
         vqConfig.maxIterations = params.vq_maxIterations;
-        // The crucial parameter for enabling sampling
         vqConfig.fastModeSampleRatio = params.vq_FastModeSampleRatio;
+        vqConfig.use_product_quantization = params.vq_use_product_quantization;
+        vqConfig.pq_subvectors = params.vq_pq_subvectors;
+        vqConfig.pq_sub_codebook_size = params.vq_pq_sub_codebook_size;
 
         VQEncoder vqEncoder(vqConfig);
         vqEncoder.SetFormat(params.bcFormat);
@@ -303,27 +304,64 @@ public:
             }
         }
 
-        // 2. Build codebook and quantize (using the new optimized functions)
-        std::vector<std::vector<float>> rgbaCentroids;
-        result.codebook = vqEncoder.BuildCodebookHDR(rgbaFloatBlocks, rgbaCentroids);
-        result.indices = vqEncoder.QuantizeBlocksHDR(rgbaFloatBlocks, rgbaCentroids);
+        std::vector<uint8_t> payloadData;
 
-        // 3. Assemble payload from codebook and indices
-        result.info.storedCodebookEntries = result.codebook.entries.size();
-        const size_t blockSize = BCBlockSize::GetSize(params.bcFormat);
-        size_t codebookDataSize = result.info.storedCodebookEntries * blockSize;
-        size_t indicesDataSize = result.indices.size() * sizeof(uint32_t);
-        std::vector<uint8_t> payloadData(codebookDataSize + indicesDataSize);
+        // --- Check which VQ path to take ---
+        if (params.vq_use_product_quantization) {
+            // --- PRODUCT QUANTIZATION PATH ---
+            result.info.compressionFlags |= COMPRESSION_FLAGS_USES_PQ; // Set the PQ flag
 
-        size_t offset = 0;
-        for (const auto& entry : result.codebook.entries) {
-            std::memcpy(payloadData.data() + offset, entry.data(), blockSize);
-            offset += blockSize;
+            ProductCodebook pq_codebook = vqEncoder.BuildProductCodebookHDR(rgbaFloatBlocks);
+            std::vector<std::vector<uint8_t>> pq_indices = vqEncoder.QuantizeProductBlocksHDR(rgbaFloatBlocks, pq_codebook);
+
+            // --- ADDED: Store PQ parameters in the header ---
+            result.info.storedCodebookEntries = pq_codebook.sub_codebook_size;
+            result.info.vq_pq_subvectors = pq_codebook.num_subvectors;
+
+            const size_t sub_dim = (16 * 4) / pq_codebook.num_subvectors;
+            const size_t codebook_data_size = pq_codebook.num_subvectors * pq_codebook.sub_codebook_size * sub_dim * sizeof(float);
+            const size_t indices_data_size = pq_indices.size() * pq_codebook.num_subvectors * sizeof(uint8_t);
+
+            payloadData.resize(codebook_data_size + indices_data_size);
+            size_t offset = 0;
+
+            // Serialize the sub-codebooks (raw float data)
+            for (const auto& sub_cb : pq_codebook.sub_codebooks) {
+                for (const auto& centroid : sub_cb) {
+                    std::memcpy(payloadData.data() + offset, centroid.data(), sub_dim * sizeof(float));
+                    offset += sub_dim * sizeof(float);
+                }
+            }
+
+            // Serialize the indices
+            for (const auto& block_indices : pq_indices) {
+                std::memcpy(payloadData.data() + offset, block_indices.data(), pq_codebook.num_subvectors * sizeof(uint8_t));
+                offset += pq_codebook.num_subvectors * sizeof(uint8_t);
+            }
+
         }
-        std::memcpy(payloadData.data() + offset, result.indices.data(), indicesDataSize);
+        else {
+            // --- STANDARD VQ PATH ---
+            std::vector<std::vector<float>> rgbaCentroids;
+            result.codebook = vqEncoder.BuildCodebookHDR(rgbaFloatBlocks, rgbaCentroids);
+            result.indices = vqEncoder.QuantizeBlocksHDR(rgbaFloatBlocks, rgbaCentroids);
 
-        result.codebook.entries.clear();
-        result.indices.clear();
+            result.info.storedCodebookEntries = result.codebook.entries.size();
+            const size_t blockSize = BCBlockSize::GetSize(params.bcFormat);
+            size_t codebookDataSize = result.info.storedCodebookEntries * blockSize;
+            size_t indicesDataSize = result.indices.size() * sizeof(uint32_t);
+            payloadData.resize(codebookDataSize + indicesDataSize);
+
+            size_t offset = 0;
+            for (const auto& entry : result.codebook.entries) {
+                std::memcpy(payloadData.data() + offset, entry.data(), blockSize);
+                offset += blockSize;
+            }
+            std::memcpy(payloadData.data() + offset, result.indices.data(), indicesDataSize);
+
+            result.codebook.entries.clear();
+            result.indices.clear();
+        }
 
         // 4. Compress final payload with Zstd
         if (params.bypassZstd) {

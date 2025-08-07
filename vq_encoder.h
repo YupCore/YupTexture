@@ -252,6 +252,8 @@ public:
         const std::vector<std::vector<float>>& rgbaFloatBlocks,
         const std::vector<std::vector<float>>& rgbaCentroids
     );
+    ProductCodebook BuildProductCodebookHDR(const std::vector<std::vector<float>>& rgbaFloatBlocks);
+    std::vector<std::vector<uint8_t>> QuantizeProductBlocksHDR(const std::vector<std::vector<float>>& rgbaFloatBlocks, const ProductCodebook& pq_codebook);
 };
 
 
@@ -843,4 +845,146 @@ inline std::vector<uint32_t> VQEncoder::QuantizeBlocksHDR(const std::vector<std:
         indices[i] = bestIdx;
     }
     return indices;
+}
+
+inline ProductCodebook VQEncoder::BuildProductCodebookHDR(const std::vector<std::vector<float>>& rgbaFloatBlocks) {
+    size_t numBlocks = rgbaFloatBlocks.size();
+    const uint32_t num_subvectors = config.pq_subvectors;
+    const size_t full_dim = 64; // 16 pixels * 4 floats (L,a,b,A)
+    const size_t sub_dim = full_dim / num_subvectors;
+
+    if (full_dim % num_subvectors != 0) {
+        throw std::runtime_error("Full vector dimension must be divisible by number of subvectors.");
+    }
+
+    // 1. Convert all blocks to perceptual oklab space
+    std::vector<OklabBlock> perceptualOklabBlocks(numBlocks);
+#pragma omp parallel for
+    for (int64_t i = 0; i < numBlocks; ++i) {
+        perceptualOklabBlocks[i] = Oklab::RgbaFloatBlockToOklabBlock(rgbaFloatBlocks[i]);
+        OklabBlockToPerceptual(perceptualOklabBlocks[i]);
+    }
+
+    ProductCodebook pq_codebook;
+    pq_codebook.num_subvectors = num_subvectors;
+    pq_codebook.sub_codebook_size = config.pq_sub_codebook_size;
+    pq_codebook.sub_codebooks.resize(num_subvectors);
+
+    // 2. For each sub-vector space, run a separate K-Means
+#pragma omp parallel for
+    for (int64_t s = 0; s < num_subvectors; ++s) {
+        // Collect all sub-vectors for the current space
+        std::vector<SubVector> sub_vectors(numBlocks, SubVector(sub_dim));
+        for (size_t i = 0; i < numBlocks; ++i) {
+            const auto& block = perceptualOklabBlocks[i];
+            std::copy(block.begin() + s * sub_dim,
+                block.begin() + (s + 1) * sub_dim,
+                sub_vectors[i].begin());
+        }
+
+        // K-Means++ Initialization for this subspace
+        std::vector<SubVector> centroids(config.pq_sub_codebook_size);
+        std::vector<float> minDistSq(numBlocks, std::numeric_limits<float>::max());
+        std::mt19937 local_rng(std::random_device{}() + s); // Seed each thread differently
+        std::uniform_int_distribution<size_t> local_distrib(0, numBlocks - 1);
+
+        centroids[0] = sub_vectors[local_distrib(local_rng)];
+
+        for (uint32_t i = 1; i < config.pq_sub_codebook_size; ++i) {
+            double current_sum = 0;
+            for (size_t j = 0; j < numBlocks; ++j) {
+                float d = SubVectorDistanceSq_SIMD(sub_vectors[j], centroids[i - 1]);
+                minDistSq[j] = std::min(d, minDistSq[j]);
+                current_sum += minDistSq[j];
+            }
+            if (current_sum <= 0) {
+                for (uint32_t k = i; k < config.pq_sub_codebook_size; ++k) centroids[k] = centroids[0];
+                break;
+            }
+            std::uniform_real_distribution<double> p_distrib(0.0, current_sum);
+            double p = p_distrib(local_rng);
+            double cumulative_p = 0.0;
+            for (size_t j = 0; j < numBlocks; ++j) {
+                cumulative_p += minDistSq[j];
+                if (cumulative_p >= p) {
+                    centroids[i] = sub_vectors[j];
+                    break;
+                }
+            }
+        }
+
+        // K-Means Iterations for this subspace
+        std::vector<uint32_t> assignments(numBlocks, 0);
+        for (uint32_t iter = 0; iter < config.maxIterations; ++iter) {
+            bool changed = false;
+            // Assignment Step
+            for (size_t i = 0; i < numBlocks; ++i) {
+                float min_d = std::numeric_limits<float>::max();
+                uint32_t best_c = 0;
+                for (uint32_t c = 0; c < config.pq_sub_codebook_size; ++c) {
+                    float d = SubVectorDistanceSq_SIMD(sub_vectors[i], centroids[c]);
+                    if (d < min_d) { min_d = d; best_c = c; }
+                }
+                if (assignments[i] != best_c) {
+                    assignments[i] = best_c;
+                    changed = true;
+                }
+            }
+            if (!changed && iter > 1) break;
+
+            // Update Step
+            std::vector<SubVector> newCentroids(config.pq_sub_codebook_size, SubVector(sub_dim, 0.0f));
+            std::vector<uint32_t> counts(config.pq_sub_codebook_size, 0);
+            for (size_t i = 0; i < numBlocks; ++i) {
+                uint32_t c_idx = assignments[i];
+                counts[c_idx]++;
+                for (size_t j = 0; j < sub_dim; ++j) {
+                    newCentroids[c_idx][j] += sub_vectors[i][j];
+                }
+            }
+            for (uint32_t c = 0; c < config.pq_sub_codebook_size; ++c) {
+                if (counts[c] > 0) {
+                    float inv_count = 1.0f / counts[c];
+                    for (size_t j = 0; j < sub_dim; ++j) {
+                        centroids[c][j] = newCentroids[c][j] * inv_count;
+                    }
+                }
+                // Not re-seeding empty clusters here for simplicity, but could be added if needed.
+            }
+        }
+        pq_codebook.sub_codebooks[s] = centroids;
+    }
+    return pq_codebook;
+}
+
+inline std::vector<std::vector<uint8_t>> VQEncoder::QuantizeProductBlocksHDR(const std::vector<std::vector<float>>& rgbaFloatBlocks, const ProductCodebook& pq_codebook) {
+    size_t numBlocks = rgbaFloatBlocks.size();
+    const uint32_t num_subvectors = pq_codebook.num_subvectors;
+    const size_t sub_dim = (16 * 4) / num_subvectors;
+
+    std::vector<std::vector<uint8_t>> all_indices(numBlocks, std::vector<uint8_t>(num_subvectors));
+
+#pragma omp parallel for
+    for (int64_t i = 0; i < numBlocks; ++i) {
+        // Convert block to perceptual space for comparison
+        OklabBlock p_block = Oklab::RgbaFloatBlockToOklabBlock(rgbaFloatBlocks[i]);
+        OklabBlockToPerceptual(p_block);
+
+        for (uint32_t s = 0; s < num_subvectors; ++s) {
+            SubVector sub_vec(sub_dim);
+            std::copy(p_block.begin() + s * sub_dim,
+                p_block.begin() + (s + 1) * sub_dim,
+                sub_vec.begin());
+
+            float min_d = std::numeric_limits<float>::max();
+            uint8_t best_idx = 0;
+            const auto& sub_codebook = pq_codebook.sub_codebooks[s];
+            for (uint32_t c = 0; c < pq_codebook.sub_codebook_size; ++c) {
+                float d = SubVectorDistanceSq_SIMD(sub_vec, sub_codebook[c]);
+                if (d < min_d) { min_d = d; best_idx = c; }
+            }
+            all_indices[i][s] = best_idx;
+        }
+    }
+    return all_indices;
 }
