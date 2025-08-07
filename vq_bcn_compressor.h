@@ -237,7 +237,10 @@ public:
         result.info.storedCodebookEntries = 0;
 
         // --- ADDED: Check for large texture to enable LDM ---
-        const bool enableLdm = (static_cast<uint64_t>(width) * height) >= (4096 * 4096);
+        bool enableLdm = false;
+        if(width >= 4000 || height >= 4000) { // Enable LDM for large textures
+			enableLdm = true;
+		}
 
         auto bcData = bcnCompressor.CompressHDR(
             rgbaData, width, height, params.bcFormat, params.bcQuality

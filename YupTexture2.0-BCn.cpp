@@ -204,16 +204,8 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
     case Albedo:
         params.bcFormat = BCFormat::BC1;
         std::cout << "Texture Type: Albedo (Using BC7 for high quality, or BC1 if alpha is present)\n";
-        if (image.channels == 4)
-        {
-			params.bypassVQ = true; // VQ is not used for Albedo with alpha
-        }
-        else
-        {
-			params.bypassVQ = false; // VQ is used for Albedo without alpha
-            params.quality = 0.8f;
-            params.vq_Metric = VQEncoder::DistanceMetric::PERCEPTUAL_LAB;
-        }
+        params.quality = 0.8f;
+        params.vq_Metric = VQEncoder::DistanceMetric::PERCEPTUAL_LAB;
         break;
     case Normal:
         std::cout << "Texture Type: Normal (Using BC5)\n";
