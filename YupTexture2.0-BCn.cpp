@@ -6,7 +6,8 @@
 #include <filesystem>
 #include <string>
 #include <atomic>
-#include <algorithm> // For std::transform
+#include <algorithm>
+#include <regex>
 
 namespace fs = std::filesystem;
 
@@ -56,13 +57,24 @@ public:
     }
 };
 
-enum SimpleTextureType { Albedo, Normal, Grayscale, Unknown };
+enum MyTextureType {
+    Albedo,
+    Normal,
+    AO,
+    Bump,
+    Displacement,
+    Gloss,
+    Roughness,
+    Specular,
+    Unknown
+};
 
 struct ImageStats {
     double mean[4] = { 0.0, 0.0, 0.0, 0.0 };
     double variance[4] = { 0.0, 0.0, 0.0, 0.0 };
     bool isGrayscale = true;
     float blueDominance = 0.0f;
+    float redDominance = 0.0f;
 };
 
 ImageStats computeImageStats(const unsigned char* data, int width, int height, int channels) {
@@ -71,12 +83,14 @@ ImageStats computeImageStats(const unsigned char* data, int width, int height, i
     if (pixelCount == 0) return stats;
     std::vector<double> channelSums(channels, 0.0);
     long blueHighCount = 0;
+    long redHighCount = 0;
     for (int i = 0; i < pixelCount; ++i) {
         if (channels >= 3 && (std::abs(data[i * 4 + 0] - data[i * 4 + 1]) > 10 || std::abs(data[i * 4 + 1] - data[i * 4 + 2]) > 10)) {
             stats.isGrayscale = false;
         }
         for (int c = 0; c < channels; ++c) channelSums[c] += data[i * channels + c];
         if (channels >= 3 && data[i * channels + 2] > 200) blueHighCount++;
+        if (channels >= 3 && data[i * channels + 0] > 200) redHighCount++;
     }
     for (int c = 0; c < channels; ++c) stats.mean[c] = channelSums[c] / pixelCount;
     for (int i = 0; i < pixelCount; ++i) {
@@ -87,14 +101,53 @@ ImageStats computeImageStats(const unsigned char* data, int width, int height, i
     }
     for (int c = 0; c < channels; ++c) stats.variance[c] /= pixelCount;
     stats.blueDominance = static_cast<float>(blueHighCount) / pixelCount;
+    stats.redDominance = static_cast<float>(redHighCount) / pixelCount;
     return stats;
 }
 
-SimpleTextureType classifyTexture(const ImageStats& stats, int channels) {
-    if (channels >= 3 && stats.isGrayscale && stats.variance[0] < 50.0 && stats.variance[1] < 50.0) return SimpleTextureType::Grayscale;
-    if (channels >= 3 && stats.blueDominance > 0.8f && stats.mean[2] > 128.0f && stats.variance[2] < 500.0) return SimpleTextureType::Normal;
-    if (channels >= 3 && !stats.isGrayscale) return SimpleTextureType::Albedo;
-    return SimpleTextureType::Unknown;
+MyTextureType classifyTextureByStats(const ImageStats& stats, int channels) {
+    if (channels >= 3 && stats.isGrayscale && stats.variance[0] < 50.0 && stats.variance[1] < 50.0) {
+        if (stats.mean[0] > 128.0f && stats.variance[0] < 30.0) return MyTextureType::AO;
+        if (stats.redDominance > 0.7f && stats.mean[0] > 150.0f) return MyTextureType::Bump;
+        return MyTextureType::Roughness; // Fallback for grayscale
+    }
+    if (channels >= 3 && stats.blueDominance > 0.8f && stats.mean[2] > 128.0f && stats.variance[2] < 500.0) return MyTextureType::Normal;
+    if (channels >= 3 && !stats.isGrayscale) return MyTextureType::Albedo;
+    return MyTextureType::Unknown;
+}
+
+MyTextureType classifyTextureByFilename(const std::string& filename) {
+    std::string fname = filename;
+    std::transform(fname.begin(), fname.end(), fname.begin(), [](unsigned char c) { return std::tolower(c); });
+
+    // Define texture keywords and their corresponding types
+    struct TextureKeyword {
+        std::string keyword;
+        MyTextureType type;
+    };
+    static const std::vector<TextureKeyword> textureKeywords = {
+        {"basecolor", MyTextureType::Albedo},
+        {"albedo", MyTextureType::Albedo},
+        {"diffuse", MyTextureType::Albedo},
+        {"normal", MyTextureType::Normal},
+        {"ao", MyTextureType::AO},
+        {"ambientocclusion", MyTextureType::AO},
+        {"bump", MyTextureType::Bump},
+        {"displacement", MyTextureType::Displacement},
+        {"gloss", MyTextureType::Gloss},
+        {"roughness", MyTextureType::Roughness},
+        {"specular", MyTextureType::Specular}
+    };
+
+    // Regex to match keywords with delimiters (e.g., "_normal.", "-normal_", etc.)
+    for (const auto& kw : textureKeywords) {
+        std::regex pattern(std::string("[-_.]") + kw.keyword + "[-_.]");
+        if (std::regex_search(fname, pattern)) {
+            return kw.type;
+        }
+    }
+
+    return MyTextureType::Unknown;
 }
 
 void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compressor) {
@@ -102,37 +155,34 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
     Image image;
     if (!image.Load(filePath.string())) return;
 
-    ImageStats stats = computeImageStats(image.data.data(), image.width, image.height, image.channels);
-    SimpleTextureType type = classifyTexture(stats, image.channels);
+    // First, try to classify by filename
+    MyTextureType type = classifyTextureByFilename(filePath.filename().string());
+    bool useStats = (type == MyTextureType::Unknown);
+
+    // If filename classification fails, fall back to statistical analysis
+    ImageStats stats;
+    if (useStats) {
+        stats = computeImageStats(image.data.data(), image.width, image.height, image.channels);
+        type = classifyTextureByStats(stats, image.channels);
+    }
+
     VQBCnCompressor::CompressionParams params;
     std::string suffix;
 
     params.bcQuality = 1.0f;
     params.zstdLevel = 10;
     params.useMultithreading = true;
-
-    // MODIFIED: Added flags to demonstrate new bypass capabilities.
-    // Set these to true to test the new functionality.
-    // Example 1: VQ-less compression (BCn -> ZSTD)
-    // params.bypassVQ = true;
-    // params.bypassZstd = false;
-    //
-    // Example 2: ZSTD-less compression (BCn -> VQ)
-    // params.bypassVQ = false;
-    // params.bypassZstd = true;
-    //
-    // Example 3: BCn-only (no VQ, no ZSTD)
-    // params.bypassVQ = true;
-    // params.bypassZstd = true;
-    //
-    // Default: Standard VQ + ZSTD compression
     params.bypassVQ = false;
     params.bypassZstd = false;
 
     switch (type) {
     case Albedo:
         std::cout << "Texture Type: Albedo (Using BC1 for color)\n";
-        params.bcFormat = BCFormat::BC1;
+        if (image.channels == 4)
+        {
+			params.alphaThreshold = 250; // Higher threshold for albedo textures
+        }
+        params.bcFormat = BCFormat::BC3;
         params.vqCodebookSize = 512;
         params.vqMetric = VQEncoder::DistanceMetric::PERCEPTUAL_LAB;
         break;
@@ -142,8 +192,38 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
         params.vqCodebookSize = 256;
         params.vqMetric = VQEncoder::DistanceMetric::RGB_SIMD;
         break;
-    case Grayscale:
-        std::cout << "Texture Type: Grayscale (Using BC4 for single-channel data)\n";
+    case AO:
+        std::cout << "Texture Type: Ambient Occlusion (Using BC4 for single-channel data)\n";
+        params.bcFormat = BCFormat::BC4;
+        params.vqCodebookSize = 128;
+        params.vqMetric = VQEncoder::DistanceMetric::RGB_SIMD;
+        break;
+    case Bump:
+        std::cout << "Texture Type: Bump (Using BC4 for single-channel data)\n";
+        params.bcFormat = BCFormat::BC4;
+        params.vqCodebookSize = 128;
+        params.vqMetric = VQEncoder::DistanceMetric::RGB_SIMD;
+        break;
+    case Displacement:
+        std::cout << "Texture Type: Displacement (Using BC4 for single-channel data)\n";
+        params.bcFormat = BCFormat::BC4;
+        params.vqCodebookSize = 128;
+        params.vqMetric = VQEncoder::DistanceMetric::RGB_SIMD;
+        break;
+    case Gloss:
+        std::cout << "Texture Type: Gloss (Using BC4 for single-channel data)\n";
+        params.bcFormat = BCFormat::BC4;
+        params.vqCodebookSize = 128;
+        params.vqMetric = VQEncoder::DistanceMetric::RGB_SIMD;
+        break;
+    case Roughness:
+        std::cout << "Texture Type: Roughness (Using BC4 for single-channel data)\n";
+        params.bcFormat = BCFormat::BC4;
+        params.vqCodebookSize = 128;
+        params.vqMetric = VQEncoder::DistanceMetric::RGB_SIMD;
+        break;
+    case Specular:
+        std::cout << "Texture Type: Specular (Using BC4 for single-channel data)\n";
         params.bcFormat = BCFormat::BC4;
         params.vqCodebookSize = 128;
         params.vqMetric = VQEncoder::DistanceMetric::RGB_SIMD;
@@ -168,18 +248,17 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
         suffix += "_noZSTD";
     }
 
-
     std::cout << "Compression Settings: BC" << static_cast<int>(params.bcFormat)
         << ", VQ Bypass: " << (params.bypassVQ ? "Yes" : "No")
         << ", ZSTD Bypass: " << (params.bypassZstd ? "Yes" : "No") << std::endl;
     if (!params.bypassVQ) {
-        std::cout << "VQ Settings: Codebook Size=" << params.vqCodebookSize << ", Metric=" << (params.vqMetric == VQEncoder::DistanceMetric::PERCEPTUAL_LAB ? "PERCEPTUAL_LAB" : "RGB_SIMD") << std::endl;
+        std::cout << "VQ Settings: Codebook Size=" << params.vqCodebookSize << ", Metric="
+            << (params.vqMetric == VQEncoder::DistanceMetric::PERCEPTUAL_LAB ? "PERCEPTUAL_LAB" : "RGB_SIMD") << std::endl;
     }
-
 
     try {
         auto start_compress = std::chrono::high_resolution_clock::now();
-        auto compressed = compressor.Compress(image.data.data(), image.width, image.height, params);
+        auto compressed = compressor.Compress(image.data.data(), image.width, image.height, image.channels, params);
         auto end_compress = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> diff_compress = end_compress - start_compress;
         std::cout << "Compression finished in " << std::fixed << std::setprecision(2) << diff_compress.count() << " seconds.\n";
@@ -195,7 +274,6 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
         std::ifstream inFile(out_name_bin, std::ios::binary);
         if (!inFile) throw std::runtime_error("Failed to open " + out_name_bin + " for reading.");
         CompressedTexture loadedTexture;
-        // The new flags in TextureInfo will be read here automatically.
         inFile.read(reinterpret_cast<char*>(&loadedTexture.info), sizeof(TextureInfo));
         inFile.seekg(0, std::ios::end);
         size_t fileDataSize = static_cast<size_t>(inFile.tellg()) - sizeof(TextureInfo);
@@ -204,15 +282,12 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
         inFile.read(reinterpret_cast<char*>(loadedTexture.compressedData.data()), fileDataSize);
         inFile.close();
 
-        // --- TIMING THE REAL-WORLD DECOMPRESSION SCENARIO ---
         auto start_decompress_bcn = std::chrono::high_resolution_clock::now();
-        // The decompressor will now correctly use the flags from loadedTexture.info
         auto bcData = compressor.DecompressToBCn(loadedTexture);
         auto end_decompress_bcn = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> diff_decompress_bcn = end_decompress_bcn - start_decompress_bcn;
         std::cout << "Decompression to BCn (GPU-ready) finished in " << std::fixed << std::setprecision(4) << diff_decompress_bcn.count() << " seconds.\n";
 
-        // --- For verification, decompress the BCn data to RGBA and save a PNG ---
         BCnCompressor bcn_decoder;
         auto decompressed = bcn_decoder.DecompressToRGBA(bcData.data(), loadedTexture.info.width, loadedTexture.info.height, loadedTexture.info.format);
 

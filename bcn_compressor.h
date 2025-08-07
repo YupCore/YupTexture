@@ -24,8 +24,10 @@ public:
         const uint8_t* rgbaData,
         uint32_t width,
         uint32_t height,
+        uint8_t channels,
         BCFormat format,
-        float quality = 1.0f
+        float quality = 1.0f,
+		uint8_t alphaThreshold = 128
     ) {
         CMP_Texture srcTexture = {};
         srcTexture.dwSize = sizeof(CMP_Texture);
@@ -55,6 +57,12 @@ public:
         options.dwSize = sizeof(options);
         options.fquality = quality;
         options.dwnumThreads = 0;  // Use all threads
+
+        if (channels == 4)
+        {
+            options.bDXT1UseAlpha = true;
+			options.nAlphaThreshold = alphaThreshold;  // Set alpha threshold for BC1
+        }
         
         CMP_ERROR error = CMP_ConvertTexture(&srcTexture, &destTexture, &options, nullptr);
         if(error != CMP_OK) {

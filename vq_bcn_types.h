@@ -48,13 +48,12 @@ enum CompressionFlags : uint32_t {
 struct TextureInfo {
     uint32_t width;
     uint32_t height;
-    uint32_t mipLevels;
     BCFormat format;
     uint32_t storedCodebookEntries;
     uint32_t compressionFlags; // MODIFIED: Bitfield using CompressionFlags
 
     // ADDED: Default constructor for safety.
-    TextureInfo() : width(0), height(0), mipLevels(0), format(BCFormat::BC1), storedCodebookEntries(0), compressionFlags(COMPRESSION_FLAGS_DEFAULT) {}
+    TextureInfo() : width(0), height(0), format(BCFormat::BC1), storedCodebookEntries(0), compressionFlags(COMPRESSION_FLAGS_DEFAULT) {}
 
     size_t GetBlocksX() const { return (width + 3) / 4; }
     size_t GetBlocksY() const { return (height + 3) / 4; }

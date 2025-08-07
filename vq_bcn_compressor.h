@@ -8,6 +8,7 @@
 #include <stdexcept> // For std::runtime_error
 #include <atomic>
 #include <cstring> // For memcpy
+#include <string>
 
 class VQBCnCompressor {
 private:
@@ -36,15 +37,22 @@ private:
 public:
     struct CompressionParams {
         BCFormat bcFormat = BCFormat::BC7;
+		// Internal quality setting for BCn compression
         float bcQuality = 1.0f;
+		// Should be set to 128 for grayscale textures, 256 for normals and 512 for albedo textures(recommended)
         uint32_t vqCodebookSize = 256;
         VQEncoder::DistanceMetric vqMetric = VQEncoder::DistanceMetric::PERCEPTUAL_LAB;
+		// Should be set in range 1-10, higher than that will cause massive slowdown
         int zstdLevel = 3;
         bool useMultithreading = true;
+		// 1.0f means use all samples, 0.5f means use half of the samples, etc
         float vqFastModeSampleRatio = 1.0f;
 
-        // ADDED: Flags to bypass compression stages.
+		uint8_t alphaThreshold = 128; // Threshold for alpha channel, default is 128
+
+        // Do not compress with VQ
         bool bypassVQ = false;
+		// Do not compress with ZSTD
         bool bypassZstd = false;
     };
 
@@ -54,18 +62,18 @@ public:
         const uint8_t* rgbaData,
         uint32_t width,
         uint32_t height,
+		uint8_t channels,
         const CompressionParams& params
     ) {
         CompressedTexture result;
         result.info.width = width;
         result.info.height = height;
         result.info.format = params.bcFormat;
-        result.info.mipLevels = 1;
         result.info.compressionFlags = COMPRESSION_FLAGS_DEFAULT; // Start with default
 
         // --- 1. Initial BCn Compression ---
         auto bcData = bcnCompressor.CompressRGBA(
-            rgbaData, width, height, params.bcFormat, params.bcQuality
+            rgbaData, width, height, channels, params.bcFormat, params.bcQuality
         );
         if (bcData.empty()) {
             throw std::runtime_error("BCn compression failed");
@@ -112,14 +120,15 @@ public:
         vqEncoder.SetFormat(params.bcFormat);
 
         const size_t numBlocks = bcData.size() / blockSize;
+        size_t numGroupedBlocks;
         std::vector<std::vector<uint8_t>> rgbaBlocks(numBlocks);
 #pragma omp parallel for
         for (int64_t i = 0; i < numBlocks; ++i) {
-            rgbaBlocks[i] = bcnCompressor.DecompressToRGBA(&bcData[i * blockSize], 4, 4, params.bcFormat);
+            rgbaBlocks[i] = bcnCompressor.DecompressToRGBA(&bcData[i * blockSize], 4, 4, params.bcFormat); // This is needed to correctly compress alpha
         }
 
         std::vector<std::vector<uint8_t>> rgbaCentroids;
-        result.codebook = vqEncoder.BuildCodebook(rgbaBlocks, rgbaCentroids);
+        result.codebook = vqEncoder.BuildCodebook(rgbaBlocks, channels, rgbaCentroids, params.alphaThreshold);
         result.indices = vqEncoder.QuantizeBlocks(rgbaBlocks, rgbaCentroids);
 
         // --- 4. Final Data Aggregation & Optional ZSTD Compression ---

@@ -14,7 +14,7 @@
 using CielabBlock = std::vector<float>;
 
 namespace ColorLuts {
-    // OPTIMIZATION: Pre-calculate lookup tables for expensive color conversions.
+    // Pre-calculate lookup tables for expensive color conversions.
     static const std::array<float, 256> sRGB_to_Linear = [] {
         std::array<float, 256> table{};
         for (int i = 0; i < 256; ++i) {
@@ -58,7 +58,7 @@ private:
 
     // --- Color Space Conversion ---
 
-    // OPTIMIZATION: Use lookup tables to accelerate sRGB -> Linear conversion
+    // Use lookup tables to accelerate sRGB -> Linear conversion
     inline void RgbToCielab(const uint8_t* rgb, float* lab) const {
         float r_lin = ColorLuts::sRGB_to_Linear[rgb[0]];
         float g_lin = ColorLuts::sRGB_to_Linear[rgb[1]];
@@ -78,7 +78,6 @@ private:
         lab[2] = 200.0f * (fy - fz);
     }
 
-    // BUGFIX: Added Cielab -> RGBA conversion to correctly save refined centroids.
     inline void CielabToRgb(const float* lab, uint8_t* rgb) const {
         float y = (lab[0] + 16.0f) / 116.0f;
         float x = lab[1] / 500.0f + y;
@@ -93,7 +92,7 @@ private:
         float g_lin = x * -0.9689f + y * 1.8758f + z * 0.0415f;
         float b_lin = x * 0.0557f + y * -0.2040f + z * 1.0570f;
 
-        // OPTIMIZATION: Use a lookup table for linear to sRGB conversion.
+        // Use a lookup table for linear to sRGB conversion.
         rgb[0] = ColorLuts::Linear_to_sRGB[static_cast<int>(std::clamp(r_lin, 0.0f, 1.0f) * 4095.0f)];
         rgb[1] = ColorLuts::Linear_to_sRGB[static_cast<int>(std::clamp(g_lin, 0.0f, 1.0f) * 4095.0f)];
         rgb[2] = ColorLuts::Linear_to_sRGB[static_cast<int>(std::clamp(b_lin, 0.0f, 1.0f) * 4095.0f)];
@@ -146,8 +145,8 @@ private:
     }
 
     // --- Helper Functions ---
-    std::vector<uint8_t> CompressSingleBlock(const uint8_t* rgbaBlock) {
-        return bcnCompressor.CompressRGBA(rgbaBlock, 4, 4, bcFormat, 1.0f);
+    std::vector<uint8_t> CompressSingleBlock(const uint8_t* rgbaBlock, uint8_t channels, uint8_t alphaThreshold = 128) {
+        return bcnCompressor.CompressRGBA(rgbaBlock, 4, 4, channels, bcFormat, 1.0f, alphaThreshold);
     }
 
 public:
@@ -159,7 +158,9 @@ public:
 
     VQCodebook BuildCodebook(
         const std::vector<std::vector<uint8_t>>& rgbaBlocks,
-        std::vector<std::vector<uint8_t>>& outRgbaCentroids
+		uint8_t channels,
+        std::vector<std::vector<uint8_t>>& outRgbaCentroids,
+        uint8_t alphaThreshold = 128
     );
 
     std::vector<uint32_t> QuantizeBlocks(
@@ -171,8 +172,8 @@ public:
 
 // --- VQEncoder Method Implementations ---
 
-inline VQCodebook VQEncoder::BuildCodebook(const std::vector<std::vector<uint8_t>>& allRgbaBlocks, std::vector<std::vector<uint8_t>>& outRgbaCentroids) {
-    // OPTIMIZATION: Use a subset of blocks for faster codebook generation
+inline VQCodebook VQEncoder::BuildCodebook(const std::vector<std::vector<uint8_t>>& allRgbaBlocks, uint8_t channels, std::vector<std::vector<uint8_t>>& outRgbaCentroids, uint8_t alphaThreshold) {
+    // Use a subset of blocks for faster codebook generation
     std::vector<const std::vector<uint8_t>*> sampledBlocksPtrs;
     if (config.fastModeSampleRatio < 1.0f && config.fastModeSampleRatio > 0.0f) {
         size_t numToSample = static_cast<size_t>(allRgbaBlocks.size() * config.fastModeSampleRatio);
@@ -250,7 +251,7 @@ inline VQCodebook VQEncoder::BuildCodebook(const std::vector<std::vector<uint8_t
             }
             if (!hasChanged) break;
 
-            // OPTIMIZATION: Parallelize the centroid update step using reduction.
+            // Parallelize the centroid update step using reduction.
             std::vector<CielabBlock> newCentroids(config.codebookSize, CielabBlock(64, 0.0f));
             std::vector<uint32_t> counts(config.codebookSize, 0);
 
@@ -305,7 +306,7 @@ inline VQCodebook VQEncoder::BuildCodebook(const std::vector<std::vector<uint8_t
             }
             if (!hasChanged) break;
 
-            // OPTIMIZATION: Parallelize the centroid update step using reduction.
+            // Parallelize the centroid update step using reduction.
             std::vector<std::vector<uint64_t>> newCentroids(config.codebookSize, std::vector<uint64_t>(64, 0));
             std::vector<uint32_t> counts(config.codebookSize, 0);
 
@@ -349,7 +350,7 @@ inline VQCodebook VQEncoder::BuildCodebook(const std::vector<std::vector<uint8_t
     finalCodebook.entries.resize(config.codebookSize);
 #pragma omp parallel for
     for (int64_t i = 0; i < config.codebookSize; ++i) {
-        finalCodebook.entries[i] = CompressSingleBlock(rgbaCentroids[i].data());
+        finalCodebook.entries[i] = CompressSingleBlock(rgbaCentroids[i].data(), channels, alphaThreshold);
     }
     return finalCodebook;
 }
