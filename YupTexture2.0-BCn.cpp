@@ -32,7 +32,7 @@ public:
             std::cerr << "Failed to load image: " << stbi_failure_reason() << std::endl;
             return false;
         }
-        width = w; height = h; channels = 4;
+        width = w; height = h; channels = c;
         size_t dataSize = (size_t)width * height * 4;
         data.assign(pixels, pixels + dataSize);
         stbi_image_free(pixels);
@@ -178,13 +178,17 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
     switch (type) {
     case Albedo:
         std::cout << "Texture Type: Albedo (Using BC1 for color)\n";
+        params.bcFormat = BCFormat::BC1;
         if (image.channels == 4)
         {
-			params.alphaThreshold = 250; // Higher threshold for albedo textures
+			params.bypassVQ = true; // Bypass VQ for alpha channel
         }
-        params.bcFormat = BCFormat::BC3;
-        params.vqCodebookSize = 512;
-        params.vqMetric = VQEncoder::DistanceMetric::PERCEPTUAL_LAB;
+        else
+        {
+            params.bypassVQ = false;
+            params.vqCodebookSize = 512;
+            params.vqMetric = VQEncoder::DistanceMetric::PERCEPTUAL_LAB;
+        }
         break;
     case Normal:
         std::cout << "Texture Type: Normal (Using BC5 for two-channel data)\n";
