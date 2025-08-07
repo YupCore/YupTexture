@@ -9,6 +9,8 @@
 #include <atomic>
 #include <cstring>
 #include <string>
+#include <vector>
+#include <memory>
 
 class VQBCnCompressor {
 private:
@@ -34,19 +36,41 @@ private:
 
     std::unique_ptr<ZstdContext> zstdCtx;
 
+    // --- ADDED: Dictionary pointers ---
+    ZSTD_CDict* cdict = nullptr;
+    ZSTD_DDict* ddict = nullptr;
+
     // Helper to compress a payload with ZSTD
-    std::vector<uint8_t> compressWithZstd(const std::vector<uint8_t>& payload, int level, bool useMultithreading) {
+    // --- MODIFIED: Now supports Long-Distance Matching and uses dictionaries ---
+    std::vector<uint8_t> compressWithZstd(const std::vector<uint8_t>& payload, int level, bool useMultithreading, bool enableLdm) {
         size_t compBound = ZSTD_compressBound(payload.size());
         std::vector<uint8_t> compressedPayload(compBound);
+
         if (useMultithreading) {
             ZSTD_CCtx_setParameter(zstdCtx->cctx, ZSTD_c_nbWorkers, std::thread::hardware_concurrency());
         }
         ZSTD_CCtx_setParameter(zstdCtx->cctx, ZSTD_c_compressionLevel, level);
-        size_t compressedSize = ZSTD_compress2(
-            zstdCtx->cctx,
-            compressedPayload.data(), compBound,
-            payload.data(), payload.size()
-        );
+        // --- ADDED: Enable/disable Long-Distance Matching ---
+        ZSTD_CCtx_setParameter(zstdCtx->cctx, ZSTD_c_enableLongDistanceMatching, enableLdm ? 1 : 0);
+
+        size_t compressedSize;
+        // --- ADDED: Use dictionary if available ---
+        if (cdict) {
+            compressedSize = ZSTD_compress_usingCDict(
+                zstdCtx->cctx,
+                compressedPayload.data(), compBound,
+                payload.data(), payload.size(),
+                cdict
+            );
+        }
+        else {
+            compressedSize = ZSTD_compress2(
+                zstdCtx->cctx,
+                compressedPayload.data(), compBound,
+                payload.data(), payload.size()
+            );
+        }
+
         if (ZSTD_isError(compressedSize)) {
             throw std::runtime_error("Zstd compression failed: " + std::string(ZSTD_getErrorName(compressedSize)));
         }
@@ -70,7 +94,30 @@ public:
 
     VQBCnCompressor() : zstdCtx(std::make_unique<ZstdContext>()) {}
 
-    // --- MODIFIED: LDR Compression entry point ---
+    // --- ADDED: Destructor to free dictionaries ---
+    ~VQBCnCompressor() {
+        ZSTD_freeCDict(cdict);
+        ZSTD_freeDDict(ddict);
+    }
+
+    // --- ADDED: Method to load a pre-trained dictionary ---
+    void LoadDictionary(const uint8_t* dictData, size_t dictSize) {
+        // Free any existing dictionaries
+        ZSTD_freeCDict(cdict);
+        ZSTD_freeDDict(ddict);
+
+        cdict = ZSTD_createCDict(dictData, dictSize, 1); // Using default compression level 1 for dict creation
+        if (!cdict) {
+            throw std::runtime_error("Failed to create ZSTD compression dictionary");
+        }
+
+        ddict = ZSTD_createDDict(dictData, dictSize);
+        if (!ddict) {
+            throw std::runtime_error("Failed to create ZSTD decompression dictionary");
+        }
+    }
+
+
     CompressedTexture Compress(
         const uint8_t* rgbaData,
         uint32_t width,
@@ -84,7 +131,12 @@ public:
         result.info.format = params.bcFormat;
         result.info.compressionFlags = COMPRESSION_FLAGS_DEFAULT;
 
-        // --- 1. Initial BCn Compression ---
+        // --- ADDED: Check for large texture to enable LDM ---
+        bool enableLdm = false;
+        if(width >= 4000 || height >= 4000) { // Enable LDM for large textures
+			enableLdm = true;
+		}
+
         auto bcData = bcnCompressor.CompressRGBA(
             rgbaData, width, height, channels, params.bcFormat, params.bcQuality, params.alphaThreshold
         );
@@ -93,7 +145,7 @@ public:
         }
         const size_t blockSize = BCBlockSize::GetSize(params.bcFormat);
 
-        // --- 2. Handle VQ Bypass ---
+        // --- Handle VQ Bypass ---
         if (params.bypassVQ) {
             result.info.compressionFlags |= COMPRESSION_FLAGS_VQ_BYPASSED;
             result.info.storedCodebookEntries = 0;
@@ -103,12 +155,12 @@ public:
                 result.compressedData = std::move(bcData);
             }
             else {
-                result.compressedData = compressWithZstd(bcData, params.zstdLevel, params.useMultithreading);
+                result.compressedData = compressWithZstd(bcData, params.zstdLevel, params.useMultithreading, enableLdm);
             }
             return result;
         }
 
-        // --- 3. Standard VQ Path ---
+        // --- Standard VQ Path ---
         VQEncoder::Config vqConfig;
         vqConfig.codebookSize = params.vqCodebookSize;
         vqConfig.metric = params.vqMetric;
@@ -127,7 +179,6 @@ public:
         result.codebook = vqEncoder.BuildCodebook(rgbaBlocks, channels, rgbaCentroids, params.alphaThreshold);
         result.indices = vqEncoder.QuantizeBlocks(rgbaBlocks, rgbaCentroids);
 
-        // --- 4. Final Data Aggregation & Optional ZSTD Compression ---
         result.info.storedCodebookEntries = result.codebook.entries.size();
         size_t codebookDataSize = result.info.storedCodebookEntries * blockSize;
         size_t indicesDataSize = result.indices.size() * sizeof(uint32_t);
@@ -148,13 +199,12 @@ public:
             result.compressedData = std::move(payloadData);
         }
         else {
-            result.compressedData = compressWithZstd(payloadData, params.zstdLevel, params.useMultithreading);
+            result.compressedData = compressWithZstd(payloadData, params.zstdLevel, params.useMultithreading, enableLdm);
         }
 
         return result;
     }
 
-    // --- ADDED: HDR Compression entry point ---
     CompressedTexture Compress(
         const float* rgbaData,
         uint32_t width,
@@ -164,12 +214,13 @@ public:
         CompressedTexture result;
         result.info.width = width;
         result.info.height = height;
-        result.info.format = params.bcFormat; // Should be BC6H
+        result.info.format = params.bcFormat;
         result.info.compressionFlags = COMPRESSION_FLAGS_IS_HDR | COMPRESSION_FLAGS_VQ_BYPASSED;
         result.info.storedCodebookEntries = 0;
 
-        // --- 1. BCn Compression for HDR ---
-        // VQ is always bypassed for HDR
+        // --- ADDED: Check for large texture to enable LDM ---
+        const bool enableLdm = (static_cast<uint64_t>(width) * height) >= (4096 * 4096);
+
         auto bcData = bcnCompressor.CompressHDR(
             rgbaData, width, height, params.bcFormat, params.bcQuality
         );
@@ -177,13 +228,12 @@ public:
             throw std::runtime_error("HDR BCn compression failed");
         }
 
-        // --- 2. Optional ZSTD Compression ---
         if (params.bypassZstd) {
             result.info.compressionFlags |= COMPRESSION_FLAGS_ZSTD_BYPASSED;
             result.compressedData = std::move(bcData);
         }
         else {
-            result.compressedData = compressWithZstd(bcData, params.zstdLevel, params.useMultithreading);
+            result.compressedData = compressWithZstd(bcData, params.zstdLevel, params.useMultithreading, enableLdm);
         }
 
         return result;
@@ -202,17 +252,35 @@ public:
         else {
             size_t decompressedSize = ZSTD_getFrameContentSize(compressed.compressedData.data(), compressed.compressedData.size());
             if (decompressedSize == ZSTD_CONTENTSIZE_ERROR || decompressedSize == ZSTD_CONTENTSIZE_UNKNOWN) {
-                throw std::runtime_error("Failed to get ZSTD decompressed size. The frame may be malformed or not contain the content size.");
+                // For dictionary compressed data, the size might not be stored in the frame header.
+                // We must rely on a sufficiently large buffer and the return value.
+                // Let's estimate a size. A 10x ratio is a generous starting point.
+                decompressedSize = compressed.compressedData.size() * 10;
             }
             payload.resize(decompressedSize);
-            size_t const dSize = ZSTD_decompressDCtx(
-                zstdCtx->dctx,
-                payload.data(), payload.size(),
-                compressed.compressedData.data(), compressed.compressedData.size()
-            );
-            if (ZSTD_isError(dSize) || dSize != decompressedSize) {
+
+            size_t dSize;
+            // --- MODIFIED: Use dictionary if available ---
+            if (ddict) {
+                dSize = ZSTD_decompress_usingDDict(
+                    zstdCtx->dctx,
+                    payload.data(), payload.size(),
+                    compressed.compressedData.data(), compressed.compressedData.size(),
+                    ddict
+                );
+            }
+            else {
+                dSize = ZSTD_decompressDCtx(
+                    zstdCtx->dctx,
+                    payload.data(), payload.size(),
+                    compressed.compressedData.data(), compressed.compressedData.size()
+                );
+            }
+
+            if (ZSTD_isError(dSize)) {
                 throw std::runtime_error("Zstd decompression failed: " + std::string(ZSTD_getErrorName(dSize)));
             }
+            payload.resize(dSize);
         }
 
         if (compressed.info.compressionFlags & COMPRESSION_FLAGS_VQ_BYPASSED) {
@@ -245,7 +313,6 @@ public:
         return bcData;
     }
 
-    // --- MODIFIED: DecompressToRGBA now dispatches based on HDR flag ---
     std::vector<uint8_t> DecompressToRGBA(const CompressedTexture& compressed) {
         if (compressed.info.compressionFlags & COMPRESSION_FLAGS_IS_HDR) {
             throw std::runtime_error("Cannot decompress HDR texture to 8-bit RGBA. Use DecompressToRGBAF instead.");
@@ -256,7 +323,6 @@ public:
         );
     }
 
-    // --- ADDED: DecompressToRGBAF for HDR textures ---
     std::vector<float> DecompressToRGBAF(const CompressedTexture& compressed) {
         if (!(compressed.info.compressionFlags & COMPRESSION_FLAGS_IS_HDR)) {
             throw std::runtime_error("Cannot decompress LDR texture to float RGBA. Use DecompressToRGBA instead.");
