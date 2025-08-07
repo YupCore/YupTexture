@@ -12,6 +12,7 @@
 #include <atomic>
 #include <vector>
 #include <stdexcept> // For std::runtime_error
+#include "oklab_math.h"
 
 // A block is 16 pixels (4x4) of 4 floats (L, a, b, alpha)
 using CielabBlock = std::vector<float>;
@@ -103,6 +104,7 @@ private:
     CielabBlock RgbaBlockToCielabBlock(const std::vector<uint8_t>& rgbaBlock) const;
     std::vector<uint8_t> CielabBlockToRgbaBlock(const CielabBlock& labBlock) const;
 
+    // --- sRGB color space math ---
 
     // --- Distance Functions ---
     float RgbaBlockDistanceSAD_SIMD(const uint8_t* rgbaA, const uint8_t* rgbaB) const {
@@ -161,6 +163,55 @@ private:
 
     std::vector<uint8_t> CompressSingleBlock(const uint8_t* rgbaBlock, uint8_t channels, uint8_t alphaThreshold = 128);
 
+	// HDR oklab color space math
+
+    // --- OPTIMIZATION: HELPER FUNCTIONS ---
+    // These helpers convert an Oklab block's L-channel to/from a perceptual space.
+    // This is now done once per block, instead of repeatedly in the distance function.
+    inline void OklabBlockToPerceptual(OklabBlock& block) const {
+        for (size_t i = 0; i < 16; ++i) {
+            block[i * 4 + 0] = Oklab::L_to_perceptual(block[i * 4 + 0]);
+        }
+    }
+
+    inline void PerceptualBlockToOklab(OklabBlock& block) const {
+        for (size_t i = 0; i < 16; ++i) {
+            block[i * 4 + 0] = Oklab::perceptual_to_L(block[i * 4 + 0]);
+        }
+    }
+
+    // --- OPTIMIZATION: DISTANCE FUNCTION ---
+    // The distance function now operates on pre-transformed "perceptual" Oklab data.
+    // It is much faster as it no longer contains expensive math operations.
+    float OklabBlockDistanceSq_SIMD(const OklabBlock& labA, const OklabBlock& labB) const {
+        __m256 sum_sq_diff = _mm256_setzero_ps();
+
+        // Weight for the difference. L-channel's squared difference will be weighted by 4.0.
+        // This is a tunable parameter for quality.
+        const __m256 weight = _mm256_set_ps(1.0f, 1.0f, 1.0f, 2.0f, 1.0f, 1.0f, 1.0f, 2.0f);
+
+        for (size_t i = 0; i < 64; i += 8) {
+            __m256 a = _mm256_loadu_ps(&labA[i]);
+            __m256 b = _mm256_loadu_ps(&labB[i]);
+
+            __m256 diff = _mm256_sub_ps(a, b);
+            __m256 weighted_diff = _mm256_mul_ps(diff, weight);
+
+            // Fused multiply-add for: sum_sq_diff += weighted_diff * weighted_diff
+            sum_sq_diff = _mm256_fmadd_ps(weighted_diff, weighted_diff, sum_sq_diff);
+        }
+
+        // Horizontal sum of the 8 floats in the accumulator
+        __m128 lo_half = _mm256_castps256_ps128(sum_sq_diff);
+        __m128 hi_half = _mm256_extractf128_ps(sum_sq_diff, 1);
+        __m128 sum_128 = _mm_add_ps(lo_half, hi_half);
+        sum_128 = _mm_hadd_ps(sum_128, sum_128);
+        sum_128 = _mm_hadd_ps(sum_128, sum_128);
+        return _mm_cvtss_f32(sum_128);
+    }
+
+    std::vector<uint8_t> CompressSingleBlockHDR(const std::vector<float>& rgbaBlock);
+
 public:
     VQEncoder(const Config& cfg = Config())
         : config(cfg), rng(std::random_device{}()) {
@@ -189,6 +240,17 @@ public:
     std::vector<std::vector<uint8_t>> QuantizeProductBlocks(
         const std::vector<std::vector<uint8_t>>& rgbaBlocks,
         const ProductCodebook& pq_codebook
+    );
+
+    // --- ADDED: Public API for HDR VQ ---
+    VQCodebook BuildCodebookHDR(
+        const std::vector<std::vector<float>>& rgbaFloatBlocks,
+        std::vector<std::vector<float>>& outRgbaCentroids
+    );
+
+    std::vector<uint32_t> QuantizeBlocksHDR(
+        const std::vector<std::vector<float>>& rgbaFloatBlocks,
+        const std::vector<std::vector<float>>& rgbaCentroids
     );
 };
 
@@ -604,4 +666,181 @@ inline std::vector<std::vector<uint8_t>> VQEncoder::QuantizeProductBlocks(const 
     }
 
     return all_indices;
+}
+
+// -- HDR VQ Methods ---
+
+inline std::vector<uint8_t> VQEncoder::CompressSingleBlockHDR(const std::vector<float>& rgbaBlock) {
+    // This assumes the format is BC6H
+    return bcnCompressor.CompressHDR(rgbaBlock.data(), 4, 4, bcFormat, 1.0f);
+}
+
+inline VQCodebook VQEncoder::BuildCodebookHDR(const std::vector<std::vector<float>>& allRgbaFloatBlocks, std::vector<std::vector<float>>& outRgbaCentroids) {
+    // 1. Sampling: Run expensive K-Means on a sample, not the entire dataset.
+    std::vector<const std::vector<float>*> sampledBlocksPtrs;
+    if (config.fastModeSampleRatio < 1.0f && config.fastModeSampleRatio > 0.0f) {
+        size_t numToSample = static_cast<size_t>(allRgbaFloatBlocks.size() * config.fastModeSampleRatio);
+        numToSample = std::max(static_cast<size_t>(config.codebookSize * 4), numToSample);
+        numToSample = std::min(numToSample, allRgbaFloatBlocks.size());
+
+        sampledBlocksPtrs.reserve(numToSample);
+        std::vector<size_t> indices(allRgbaFloatBlocks.size());
+        std::iota(indices.begin(), indices.end(), 0);
+        std::shuffle(indices.begin(), indices.end(), rng);
+        for (size_t i = 0; i < numToSample; ++i) {
+            sampledBlocksPtrs.push_back(&allRgbaFloatBlocks[indices[i]]);
+        }
+    }
+    else {
+        sampledBlocksPtrs.reserve(allRgbaFloatBlocks.size());
+        for (const auto& block : allRgbaFloatBlocks) {
+            sampledBlocksPtrs.push_back(&block);
+        }
+    }
+
+    const auto& blocksToProcess = sampledBlocksPtrs;
+    size_t numBlocks = blocksToProcess.size();
+    if (numBlocks == 0) return {};
+
+    // 2. Pre-transformation: Convert to perceptual Oklab *once*.
+    std::vector<OklabBlock> perceptualOklabBlocks(numBlocks);
+#pragma omp parallel for
+    for (int64_t i = 0; i < numBlocks; ++i) {
+        perceptualOklabBlocks[i] = Oklab::RgbaFloatBlockToOklabBlock(*blocksToProcess[i]);
+        OklabBlockToPerceptual(perceptualOklabBlocks[i]);
+    }
+
+    // 3. K-Means++ Initialization (on pre-transformed perceptual data)
+    std::vector<OklabBlock> perceptualOklabCentroids(config.codebookSize);
+    std::vector<float> minDistSq(numBlocks, std::numeric_limits<float>::max());
+    std::uniform_int_distribution<size_t> distrib(0, numBlocks - 1);
+    perceptualOklabCentroids[0] = perceptualOklabBlocks[distrib(rng)];
+
+    for (uint32_t i = 1; i < config.codebookSize; ++i) {
+        double current_sum = 0.0;
+#pragma omp parallel for reduction(+:current_sum)
+        for (int64_t j = 0; j < numBlocks; ++j) {
+            float d = OklabBlockDistanceSq_SIMD(perceptualOklabBlocks[j], perceptualOklabCentroids[i - 1]);
+            minDistSq[j] = std::min(d, minDistSq[j]);
+            current_sum += minDistSq[j];
+        }
+        if (current_sum <= 0) {
+            for (uint32_t k = i; k < config.codebookSize; ++k) perceptualOklabCentroids[k] = perceptualOklabCentroids[0];
+            break;
+        }
+        std::uniform_real_distribution<double> p_distrib(0.0, current_sum);
+        double p = p_distrib(rng);
+        double cumulative_p = 0.0;
+        for (size_t j = 0; j < numBlocks; ++j) {
+            cumulative_p += minDistSq[j];
+            if (cumulative_p >= p) {
+                perceptualOklabCentroids[i] = perceptualOklabBlocks[j];
+                break;
+            }
+        }
+    }
+
+    // 4. K-Means Iterations
+    std::vector<uint32_t> assignments(numBlocks, 0);
+    std::vector<float> errors(numBlocks);
+    for (uint32_t iter = 0; iter < config.maxIterations; ++iter) {
+        std::atomic<bool> hasChanged = false;
+#pragma omp parallel for
+        for (int64_t i = 0; i < numBlocks; ++i) {
+            float min_d = std::numeric_limits<float>::max();
+            uint32_t best_c = 0;
+            for (uint32_t c = 0; c < config.codebookSize; ++c) {
+                float d = OklabBlockDistanceSq_SIMD(perceptualOklabBlocks[i], perceptualOklabCentroids[c]);
+                if (d < min_d) { min_d = d; best_c = c; }
+            }
+            errors[i] = min_d;
+            if (assignments[i] != best_c) { assignments[i] = best_c; hasChanged = true; }
+        }
+        if (!hasChanged && iter > 1) break;
+
+        std::vector<OklabBlock> newCentroids(config.codebookSize, OklabBlock(64, 0.0f));
+        std::vector<uint32_t> counts(config.codebookSize, 0);
+#pragma omp parallel
+        {
+            std::vector<OklabBlock> localNewCentroids(config.codebookSize, OklabBlock(64, 0.0f));
+            std::vector<uint32_t> localCounts(config.codebookSize, 0);
+#pragma omp for nowait
+            for (int64_t i = 0; i < numBlocks; ++i) {
+                uint32_t c_idx = assignments[i];
+                localCounts[c_idx]++;
+                for (size_t j = 0; j < 64; ++j) localNewCentroids[c_idx][j] += perceptualOklabBlocks[i][j];
+            }
+#pragma omp critical
+            {
+                for (uint32_t c = 0; c < config.codebookSize; ++c) {
+                    counts[c] += localCounts[c];
+                    for (size_t j = 0; j < 64; ++j) newCentroids[c][j] += localNewCentroids[c][j];
+                }
+            }
+        }
+#pragma omp parallel for
+        for (int64_t c = 0; c < config.codebookSize; ++c) {
+            if (counts[c] > 0) {
+                float inv_count = 1.0f / counts[c];
+                for (size_t j = 0; j < 64; ++j) perceptualOklabCentroids[c][j] = newCentroids[c][j] * inv_count;
+            }
+            else {
+                size_t worstBlockIdx = std::distance(errors.begin(), std::max_element(std::execution::par, errors.begin(), errors.end()));
+                perceptualOklabCentroids[c] = perceptualOklabBlocks[worstBlockIdx];
+                errors[worstBlockIdx] = 0.0f;
+            }
+        }
+    }
+
+    // 5. Finalize Codebook
+    outRgbaCentroids.resize(config.codebookSize);
+#pragma omp parallel for
+    for (int64_t i = 0; i < config.codebookSize; ++i) {
+        OklabBlock finalOklabCentroid = perceptualOklabCentroids[i];
+        PerceptualBlockToOklab(finalOklabCentroid);
+        outRgbaCentroids[i] = Oklab::OklabBlockToRgbaFloatBlock(finalOklabCentroid);
+    }
+
+    VQCodebook finalCodebook(BCBlockSize::GetSize(bcFormat), config.codebookSize);
+    finalCodebook.entries.resize(config.codebookSize);
+#pragma omp parallel for
+    for (int64_t i = 0; i < config.codebookSize; ++i) {
+        finalCodebook.entries[i] = CompressSingleBlockHDR(outRgbaCentroids[i]);
+    }
+    return finalCodebook;
+}
+
+
+inline std::vector<uint32_t> VQEncoder::QuantizeBlocksHDR(const std::vector<std::vector<float>>& rgbaFloatBlocks, const std::vector<std::vector<float>>& rgbaCentroids) {
+    size_t numBlocks = rgbaFloatBlocks.size();
+    if (numBlocks == 0) return {};
+    std::vector<uint32_t> indices(numBlocks);
+    uint32_t codebookSize = static_cast<uint32_t>(rgbaCentroids.size());
+
+    // 1. Convert all final centroids to perceptual Oklab space once.
+    std::vector<OklabBlock> perceptualLabCentroids(codebookSize);
+#pragma omp parallel for
+    for (int64_t i = 0; i < codebookSize; ++i) {
+        perceptualLabCentroids[i] = Oklab::RgbaFloatBlockToOklabBlock(rgbaCentroids[i]);
+        OklabBlockToPerceptual(perceptualLabCentroids[i]);
+    }
+
+    // 2. Find best index for each block, converting to perceptual space as we go.
+#pragma omp parallel for
+    for (int64_t i = 0; i < numBlocks; ++i) {
+        OklabBlock perceptualLabBlock = Oklab::RgbaFloatBlockToOklabBlock(rgbaFloatBlocks[i]);
+        OklabBlockToPerceptual(perceptualLabBlock);
+
+        float minDist = std::numeric_limits<float>::max();
+        uint32_t bestIdx = 0;
+        for (uint32_t j = 0; j < codebookSize; ++j) {
+            float dist = OklabBlockDistanceSq_SIMD(perceptualLabBlock, perceptualLabCentroids[j]);
+            if (dist < minDist) {
+                minDist = dist;
+                bestIdx = j;
+            }
+        }
+        indices[i] = bestIdx;
+    }
+    return indices;
 }

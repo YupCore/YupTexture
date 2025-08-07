@@ -230,32 +230,109 @@ public:
         uint32_t height,
         const CompressionParams& params
     ) {
+        if (params.bcFormat != BCFormat::BC6H) {
+            throw std::runtime_error("HDR compression only supports BC6H format.");
+        }
+
+        // --- If VQ is disabled for HDR, use the simple bypass path ---
+        if (params.bypassVQ) {
+            CompressedTexture result;
+            result.info.width = width;
+            result.info.height = height;
+            result.info.format = params.bcFormat;
+            result.info.compressionFlags = COMPRESSION_FLAGS_IS_HDR | COMPRESSION_FLAGS_VQ_BYPASSED;
+            result.info.storedCodebookEntries = 0;
+
+            bool enableLdm = (width >= 4000 || height >= 4000);
+
+            auto bcData = bcnCompressor.CompressHDR(rgbaData, width, height, params.bcFormat, params.bcQuality);
+            if (bcData.empty()) {
+                throw std::runtime_error("HDR BCn compression failed");
+            }
+            if (params.bypassZstd) {
+                result.info.compressionFlags |= COMPRESSION_FLAGS_ZSTD_BYPASSED;
+                result.compressedData = std::move(bcData);
+            }
+            else {
+                result.compressedData = compressWithZstd(bcData, params.zstdLevel, params.useMultithreading, enableLdm);
+            }
+            return result;
+        }
+
+        // --- HDR VQ Path ---
         CompressedTexture result;
         result.info.width = width;
         result.info.height = height;
         result.info.format = params.bcFormat;
-        result.info.compressionFlags = COMPRESSION_FLAGS_IS_HDR | COMPRESSION_FLAGS_VQ_BYPASSED;
-        result.info.storedCodebookEntries = 0;
+        result.info.compressionFlags = COMPRESSION_FLAGS_IS_HDR;
 
-        // --- ADDED: Check for large texture to enable LDM ---
-        bool enableLdm = false;
-        if(width >= 4000 || height >= 4000) { // Enable LDM for large textures
-			enableLdm = true;
-		}
+        // Setup VQ
+        VQEncoder::Config vqConfig;
+        vqConfig.SetQuality(params.quality);
+        vqConfig.min_cb_power = params.vq_min_cb_power;
+        vqConfig.max_cb_power = params.vq_max_cb_power;
+        vqConfig.maxIterations = params.vq_maxIterations;
+        // The crucial parameter for enabling sampling
+        vqConfig.fastModeSampleRatio = params.vq_FastModeSampleRatio;
 
-        auto bcData = bcnCompressor.CompressHDR(
-            rgbaData, width, height, params.bcFormat, params.bcQuality
-        );
-        if (bcData.empty()) {
-            throw std::runtime_error("HDR BCn compression failed");
+        VQEncoder vqEncoder(vqConfig);
+        vqEncoder.SetFormat(params.bcFormat);
+
+        // 1. Chunk input float data into 4x4 blocks
+        const size_t numBlocksX = (width + 3) / 4;
+        const size_t numBlocksY = (height + 3) / 4;
+        const size_t numBlocks = numBlocksX * numBlocksY;
+        std::vector<std::vector<float>> rgbaFloatBlocks(numBlocks);
+
+#pragma omp parallel for
+        for (int64_t i = 0; i < numBlocks; ++i) {
+            rgbaFloatBlocks[i].resize(16 * 4);
+            size_t blockX = i % numBlocksX;
+            size_t blockY = i / numBlocksX;
+            size_t startX = blockX * 4;
+            size_t startY = blockY * 4;
+
+            for (size_t y = 0; y < 4; ++y) {
+                for (size_t x = 0; x < 4; ++x) {
+                    size_t pX = std::min(startX + x, (size_t)width - 1);
+                    size_t pY = std::min(startY + y, (size_t)height - 1);
+                    const float* srcPixel = &rgbaData[(pY * width + pX) * 4];
+                    float* dstPixel = &rgbaFloatBlocks[i][(y * 4 + x) * 4];
+                    std::copy(srcPixel, srcPixel + 4, dstPixel);
+                }
+            }
         }
 
+        // 2. Build codebook and quantize (using the new optimized functions)
+        std::vector<std::vector<float>> rgbaCentroids;
+        result.codebook = vqEncoder.BuildCodebookHDR(rgbaFloatBlocks, rgbaCentroids);
+        result.indices = vqEncoder.QuantizeBlocksHDR(rgbaFloatBlocks, rgbaCentroids);
+
+        // 3. Assemble payload from codebook and indices
+        result.info.storedCodebookEntries = result.codebook.entries.size();
+        const size_t blockSize = BCBlockSize::GetSize(params.bcFormat);
+        size_t codebookDataSize = result.info.storedCodebookEntries * blockSize;
+        size_t indicesDataSize = result.indices.size() * sizeof(uint32_t);
+        std::vector<uint8_t> payloadData(codebookDataSize + indicesDataSize);
+
+        size_t offset = 0;
+        for (const auto& entry : result.codebook.entries) {
+            std::memcpy(payloadData.data() + offset, entry.data(), blockSize);
+            offset += blockSize;
+        }
+        std::memcpy(payloadData.data() + offset, result.indices.data(), indicesDataSize);
+
+        result.codebook.entries.clear();
+        result.indices.clear();
+
+        // 4. Compress final payload with Zstd
         if (params.bypassZstd) {
             result.info.compressionFlags |= COMPRESSION_FLAGS_ZSTD_BYPASSED;
-            result.compressedData = std::move(bcData);
+            result.compressedData = std::move(payloadData);
         }
         else {
-            result.compressedData = compressWithZstd(bcData, params.zstdLevel, params.useMultithreading, enableLdm);
+            bool enableLdm = (width >= 4000 || height >= 4000);
+            result.compressedData = compressWithZstd(payloadData, params.zstdLevel, params.useMultithreading, enableLdm);
         }
 
         return result;

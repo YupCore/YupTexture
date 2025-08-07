@@ -32,5 +32,8 @@
     <ClInclude Include="vq_bcn_compressor.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="oklab_math.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
   </ItemGroup>
 </Project>

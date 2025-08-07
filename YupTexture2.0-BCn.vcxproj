@@ -139,6 +139,7 @@
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="bcn_compressor.h" />
+    <ClInclude Include="oklab_math.h" />
     <ClInclude Include="vq_bcn_compressor.h" />
     <ClInclude Include="vq_bcn_types.h" />
     <ClInclude Include="vq_encoder.h" />

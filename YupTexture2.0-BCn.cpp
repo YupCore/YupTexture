@@ -196,15 +196,20 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
 
     switch (type) {
     case HDR:
-        std::cout << "Texture Type: HDR (Using BC6H)\n";
+        std::cout << "Texture Type: HDR (Using BC6H with VQ)\n";
         params.bcFormat = BCFormat::BC6H;
-        params.bypassVQ = true; // VQ is not used for HDR
-		params.bcQuality = 0.05f; // Lower quality for HDR to set reasanable compression time
+        // --- MODIFIED: Enable VQ for HDR and set params ---
+		params.bcQuality = 0.05f; // Use a lower quality for HDR to set reasonable compression time
+        params.quality = 0.7f; // Use a medium-high quality for HDR VQ
+        // VQ quality for HDR might need different tuning than for LDR
+        params.vq_min_cb_power = 6;  // 64 entries
+        params.vq_max_cb_power = 12; // 4096 entriess
+        params.vq_FastModeSampleRatio = 0.1f;
         break;
     case Albedo:
         params.bcFormat = BCFormat::BC1;
         std::cout << "Texture Type: Albedo using BC1\n";
-		params.alphaThreshold = 1; // Use alpha threshold for BC1 compression
+		params.alphaThreshold = 1; // Use smallest alpha threshold for BC1 compression
         params.quality = 0.8f;
         params.vq_Metric = VQEncoder::DistanceMetric::PERCEPTUAL_LAB;
         break;
@@ -239,7 +244,8 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
     }
 
     std::cout << "Compression: BC" << static_cast<int>(params.bcFormat)
-        << ", VQ Bypass: " << (params.bypassVQ ? "Yes" : "No") << std::endl;
+        << ", VQ Bypass: " << (params.bypassVQ ? "Yes" : "No") <<
+        ", ZSTD Bypass: " << (params.bypassZstd ? "Yes" : "No") << std::endl;
 
     try {
         std::string out_name_bin = "output/" + filePath.stem().string() + suffix + ".yupt2";
