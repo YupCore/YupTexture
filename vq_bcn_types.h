@@ -54,16 +54,13 @@ struct TextureInfo {
     BCFormat format;
     uint32_t storedCodebookEntries;
     uint32_t compressionFlags;
-    uint32_t vq_pq_subvectors;      // Number of sub-vectors used in PQ
-
 
     TextureInfo() :
         width(0),
         height(0),
         format(BCFormat::BC1),
         storedCodebookEntries(0),
-        compressionFlags(COMPRESSION_FLAGS_DEFAULT),
-        vq_pq_subvectors(0)
+        compressionFlags(COMPRESSION_FLAGS_DEFAULT)
     { }
 
     size_t GetBlocksX() const { return (width + 3) / 4; }
@@ -93,4 +90,27 @@ struct CompressedTexture {
     size_t GetUncompressedSize() const {
         return info.GetTotalBlocks() * BCBlockSize::GetSize(info.format);
     }
+};
+
+enum class DistanceMetric {
+    RGB_SIMD,       // Fastest: SAD on RGB values, accelerated with AVX2.
+    PERCEPTUAL_LAB  // High Quality: Euclidean distance in CIELAB color space.
+};
+
+struct CompressionParams {
+    BCFormat bcFormat = BCFormat::BC7;
+    float bcQuality = 1.0f;
+    int zstdLevel = 3;
+    int numThreads = 16; // default to 16 threads
+    uint8_t alphaThreshold = 128;
+    bool bypassVQ = false;
+    bool bypassZstd = false;
+
+    // --- VQ Settings ---
+    float vq_FastModeSampleRatio = 1.0f;
+    float quality = 0.5f;
+    DistanceMetric vq_Metric = DistanceMetric::PERCEPTUAL_LAB;
+    uint32_t vq_min_cb_power = 4; // 2^4 = 16 entries at quality=0
+    uint32_t vq_max_cb_power = 10; // 2^10 = 1024 entries at quality=1
+    uint32_t vq_maxIterations = 32;
 };

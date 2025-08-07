@@ -187,10 +187,10 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
         }
     }
 
-    VQBCnCompressor::CompressionParams params;
+    CompressionParams params;
     params.bcQuality = 1.0f;
     params.zstdLevel = 10;
-    params.useMultithreading = true;
+    params.numThreads = 16;
     params.bypassVQ = false;
     params.bypassZstd = false;
 
@@ -211,13 +211,13 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
         std::cout << "Texture Type: Albedo using BC1\n";
 		params.alphaThreshold = 1; // Use smallest alpha threshold for BC1 compression
         params.quality = 0.8f;
-        params.vq_Metric = VQEncoder::DistanceMetric::PERCEPTUAL_LAB;
+        params.vq_Metric = DistanceMetric::PERCEPTUAL_LAB;
         break;
     case Normal:
         std::cout << "Texture Type: Normal (Using BC5)\n";
         params.bcFormat = BCFormat::BC5;
         params.quality = 0.8f;
-        params.vq_Metric = VQEncoder::DistanceMetric::RGB_SIMD;
+        params.vq_Metric = DistanceMetric::RGB_SIMD;
         break;
     case AO:
     case Bump:
@@ -228,19 +228,19 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
         std::cout << "Texture Type: Grayscale/Mask (Using BC4)\n";
         params.bcFormat = BCFormat::BC4;
         params.quality = 0.5f;
-        params.vq_Metric = VQEncoder::DistanceMetric::RGB_SIMD;
+        params.vq_Metric = DistanceMetric::RGB_SIMD;
         break;
     default:
         std::cout << "Texture Type: Unknown (Defaulting to BC7)\n";
         params.bcFormat = BCFormat::BC7;
         params.quality = 0.8f;
-        params.vq_Metric = VQEncoder::DistanceMetric::RGB_SIMD;
+        params.vq_Metric = DistanceMetric::RGB_SIMD;
         break;
     }
 
     std::string suffix = "_bc" + std::to_string(static_cast<int>(params.bcFormat));
     if (!params.bypassVQ) {
-        suffix += (params.vq_Metric == VQEncoder::DistanceMetric::PERCEPTUAL_LAB ? "_lab" : "_rgb");
+        suffix += (params.vq_Metric == DistanceMetric::PERCEPTUAL_LAB ? "_lab" : "_rgb");
     }
 
     std::cout << "Compression: BC" << static_cast<int>(params.bcFormat)

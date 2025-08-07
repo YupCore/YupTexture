@@ -42,13 +42,11 @@ private:
 
     // Helper to compress a payload with ZSTD
     // --- MODIFIED: Now supports Long-Distance Matching and uses dictionaries ---
-    std::vector<uint8_t> compressWithZstd(const std::vector<uint8_t>& payload, int level, bool useMultithreading, bool enableLdm) {
+    std::vector<uint8_t> compressWithZstd(const std::vector<uint8_t>& payload, int level, int numThreads, bool enableLdm) {
         size_t compBound = ZSTD_compressBound(payload.size());
         std::vector<uint8_t> compressedPayload(compBound);
 
-        if (useMultithreading) {
-            ZSTD_CCtx_setParameter(zstdCtx->cctx, ZSTD_c_nbWorkers, std::thread::hardware_concurrency());
-        }
+        ZSTD_CCtx_setParameter(zstdCtx->cctx, ZSTD_c_nbWorkers, numThreads);
         ZSTD_CCtx_setParameter(zstdCtx->cctx, ZSTD_c_compressionLevel, level);
         // --- ADDED: Enable/disable Long-Distance Matching ---
         ZSTD_CCtx_setParameter(zstdCtx->cctx, ZSTD_c_enableLongDistanceMatching, enableLdm ? 1 : 0);
@@ -79,30 +77,6 @@ private:
     }
 
 public:
-    struct CompressionParams {
-        BCFormat bcFormat = BCFormat::BC7;
-        float bcQuality = 1.0f;
-        int zstdLevel = 3;
-        bool useMultithreading = true;
-        uint8_t alphaThreshold = 128;
-        bool bypassVQ = false;
-        bool bypassZstd = false;
-
-		// --- VQ Settings ---
-        float vq_FastModeSampleRatio = 1.0f;
-        float quality = 0.5f;
-        VQEncoder::DistanceMetric vq_Metric = VQEncoder::DistanceMetric::PERCEPTUAL_LAB;
-        uint32_t vq_min_cb_power = 4; // 2^4 = 16 entries at quality=0
-        uint32_t vq_max_cb_power = 10; // 2^10 = 1024 entries at quality=1
-        uint32_t vq_maxIterations = 32;
-
-        // --- Product Quantization (PQ) Settings ---
-        bool vq_use_product_quantization = true;
-        uint32_t vq_pq_subvectors = 8; // Split each 64-dim block into 8 sub-vectors
-        uint32_t vq_pq_sub_codebook_size = 256; // 256 centroids for each sub-vector
-
-    };
-
     VQBCnCompressor() : zstdCtx(std::make_unique<ZstdContext>()) {}
 
     // --- ADDED: Destructor to free dictionaries ---
@@ -149,7 +123,8 @@ public:
 		}
 
         auto bcData = bcnCompressor.CompressRGBA(
-            rgbaData, width, height, channels, params.bcFormat, params.bcQuality, params.alphaThreshold
+            rgbaData, width, height, channels, params.bcFormat,
+            params.numThreads, params.bcQuality, params.alphaThreshold
         );
         if (bcData.empty()) {
             throw std::runtime_error("BCn compression failed");
@@ -166,7 +141,7 @@ public:
                 result.compressedData = std::move(bcData);
             }
             else {
-                result.compressedData = compressWithZstd(bcData, params.zstdLevel, params.useMultithreading, enableLdm);
+                result.compressedData = compressWithZstd(bcData, params.zstdLevel, params.numThreads, enableLdm);
             }
             return result;
         }
@@ -176,9 +151,6 @@ public:
         vqConfig.metric = params.vq_Metric;
         vqConfig.fastModeSampleRatio = params.vq_FastModeSampleRatio;
 		vqConfig.maxIterations = params.vq_maxIterations;
-		vqConfig.use_product_quantization = params.vq_use_product_quantization;
-		vqConfig.pq_subvectors = params.vq_pq_subvectors;
-		vqConfig.pq_sub_codebook_size = params.vq_pq_sub_codebook_size;
 		vqConfig.SetQuality(params.quality);
 		vqConfig.min_cb_power = params.vq_min_cb_power;
 		vqConfig.max_cb_power = params.vq_max_cb_power;
@@ -188,14 +160,14 @@ public:
 
         const size_t numBlocks = bcData.size() / blockSize;
         std::vector<std::vector<uint8_t>> rgbaBlocks(numBlocks);
-#pragma omp parallel for
+#pragma omp parallel for num_threads(params.numThreads)
         for (int64_t i = 0; i < numBlocks; ++i) {
             rgbaBlocks[i] = bcnCompressor.DecompressToRGBA(&bcData[i * blockSize], 4, 4, params.bcFormat);
         }
 
         std::vector<std::vector<uint8_t>> rgbaCentroids;
-        result.codebook = vqEncoder.BuildCodebook(rgbaBlocks, channels, rgbaCentroids, params.alphaThreshold);
-        result.indices = vqEncoder.QuantizeBlocks(rgbaBlocks, rgbaCentroids);
+        result.codebook = vqEncoder.BuildCodebook(rgbaBlocks, channels, rgbaCentroids, params);
+        result.indices = vqEncoder.QuantizeBlocks(rgbaBlocks, rgbaCentroids, params);
 
         result.info.storedCodebookEntries = result.codebook.entries.size();
         size_t codebookDataSize = result.info.storedCodebookEntries * blockSize;
@@ -217,7 +189,7 @@ public:
             result.compressedData = std::move(payloadData);
         }
         else {
-            result.compressedData = compressWithZstd(payloadData, params.zstdLevel, params.useMultithreading, enableLdm);
+            result.compressedData = compressWithZstd(payloadData, params.zstdLevel, params.numThreads, enableLdm);
         }
 
         return result;
@@ -245,7 +217,7 @@ public:
 
             bool enableLdm = (width >= 4000 || height >= 4000);
 
-            auto bcData = bcnCompressor.CompressHDR(rgbaData, width, height, params.bcFormat, params.bcQuality);
+            auto bcData = bcnCompressor.CompressHDR(rgbaData, width, height, params.bcFormat, params.numThreads, params.bcQuality);
             if (bcData.empty()) {
                 throw std::runtime_error("HDR BCn compression failed");
             }
@@ -254,7 +226,7 @@ public:
                 result.compressedData = std::move(bcData);
             }
             else {
-                result.compressedData = compressWithZstd(bcData, params.zstdLevel, params.useMultithreading, enableLdm);
+                result.compressedData = compressWithZstd(bcData, params.zstdLevel, params.numThreads, enableLdm);
             }
             return result;
         }
@@ -272,9 +244,6 @@ public:
         vqConfig.max_cb_power = params.vq_max_cb_power;
         vqConfig.maxIterations = params.vq_maxIterations;
         vqConfig.fastModeSampleRatio = params.vq_FastModeSampleRatio;
-        vqConfig.use_product_quantization = params.vq_use_product_quantization;
-        vqConfig.pq_subvectors = params.vq_pq_subvectors;
-        vqConfig.pq_sub_codebook_size = params.vq_pq_sub_codebook_size;
 
         VQEncoder vqEncoder(vqConfig);
         vqEncoder.SetFormat(params.bcFormat);
@@ -285,7 +254,7 @@ public:
         const size_t numBlocks = numBlocksX * numBlocksY;
         std::vector<std::vector<float>> rgbaFloatBlocks(numBlocks);
 
-#pragma omp parallel for
+#pragma omp parallel for num_threads(params.numThreads)
         for (int64_t i = 0; i < numBlocks; ++i) {
             rgbaFloatBlocks[i].resize(16 * 4);
             size_t blockX = i % numBlocksX;
@@ -306,62 +275,26 @@ public:
 
         std::vector<uint8_t> payloadData;
 
-        // --- Check which VQ path to take ---
-        if (params.vq_use_product_quantization) {
-            // --- PRODUCT QUANTIZATION PATH ---
-            result.info.compressionFlags |= COMPRESSION_FLAGS_USES_PQ; // Set the PQ flag
+         // --- STANDARD VQ PATH ---
+        std::vector<std::vector<float>> rgbaCentroids;
+        result.codebook = vqEncoder.BuildCodebookHDR(rgbaFloatBlocks, rgbaCentroids, params);
+        result.indices = vqEncoder.QuantizeBlocksHDR(rgbaFloatBlocks, rgbaCentroids, params);
 
-            ProductCodebook pq_codebook = vqEncoder.BuildProductCodebookHDR(rgbaFloatBlocks);
-            std::vector<std::vector<uint8_t>> pq_indices = vqEncoder.QuantizeProductBlocksHDR(rgbaFloatBlocks, pq_codebook);
+        result.info.storedCodebookEntries = result.codebook.entries.size();
+        const size_t blockSize = BCBlockSize::GetSize(params.bcFormat);
+        size_t codebookDataSize = result.info.storedCodebookEntries * blockSize;
+        size_t indicesDataSize = result.indices.size() * sizeof(uint32_t);
+        payloadData.resize(codebookDataSize + indicesDataSize);
 
-            // --- ADDED: Store PQ parameters in the header ---
-            result.info.storedCodebookEntries = pq_codebook.sub_codebook_size;
-            result.info.vq_pq_subvectors = pq_codebook.num_subvectors;
-
-            const size_t sub_dim = (16 * 4) / pq_codebook.num_subvectors;
-            const size_t codebook_data_size = pq_codebook.num_subvectors * pq_codebook.sub_codebook_size * sub_dim * sizeof(float);
-            const size_t indices_data_size = pq_indices.size() * pq_codebook.num_subvectors * sizeof(uint8_t);
-
-            payloadData.resize(codebook_data_size + indices_data_size);
-            size_t offset = 0;
-
-            // Serialize the sub-codebooks (raw float data)
-            for (const auto& sub_cb : pq_codebook.sub_codebooks) {
-                for (const auto& centroid : sub_cb) {
-                    std::memcpy(payloadData.data() + offset, centroid.data(), sub_dim * sizeof(float));
-                    offset += sub_dim * sizeof(float);
-                }
-            }
-
-            // Serialize the indices
-            for (const auto& block_indices : pq_indices) {
-                std::memcpy(payloadData.data() + offset, block_indices.data(), pq_codebook.num_subvectors * sizeof(uint8_t));
-                offset += pq_codebook.num_subvectors * sizeof(uint8_t);
-            }
-
+        size_t offset = 0;
+        for (const auto& entry : result.codebook.entries) {
+            std::memcpy(payloadData.data() + offset, entry.data(), blockSize);
+            offset += blockSize;
         }
-        else {
-            // --- STANDARD VQ PATH ---
-            std::vector<std::vector<float>> rgbaCentroids;
-            result.codebook = vqEncoder.BuildCodebookHDR(rgbaFloatBlocks, rgbaCentroids);
-            result.indices = vqEncoder.QuantizeBlocksHDR(rgbaFloatBlocks, rgbaCentroids);
+        std::memcpy(payloadData.data() + offset, result.indices.data(), indicesDataSize);
 
-            result.info.storedCodebookEntries = result.codebook.entries.size();
-            const size_t blockSize = BCBlockSize::GetSize(params.bcFormat);
-            size_t codebookDataSize = result.info.storedCodebookEntries * blockSize;
-            size_t indicesDataSize = result.indices.size() * sizeof(uint32_t);
-            payloadData.resize(codebookDataSize + indicesDataSize);
-
-            size_t offset = 0;
-            for (const auto& entry : result.codebook.entries) {
-                std::memcpy(payloadData.data() + offset, entry.data(), blockSize);
-                offset += blockSize;
-            }
-            std::memcpy(payloadData.data() + offset, result.indices.data(), indicesDataSize);
-
-            result.codebook.entries.clear();
-            result.indices.clear();
-        }
+        result.codebook.entries.clear();
+        result.indices.clear();
 
         // 4. Compress final payload with Zstd
         if (params.bypassZstd) {
@@ -370,14 +303,14 @@ public:
         }
         else {
             bool enableLdm = (width >= 4000 || height >= 4000);
-            result.compressedData = compressWithZstd(payloadData, params.zstdLevel, params.useMultithreading, enableLdm);
+            result.compressedData = compressWithZstd(payloadData, params.zstdLevel, params.numThreads, enableLdm);
         }
 
         return result;
     }
 
 
-    std::vector<uint8_t> DecompressToBCn(const CompressedTexture& compressed) {
+    std::vector<uint8_t> DecompressToBCn(const CompressedTexture& compressed, int numThreads = 16) {
         if (compressed.compressedData.empty()) {
             throw std::runtime_error("Compressed data stream is empty. Cannot decompress.");
         }
@@ -438,7 +371,7 @@ public:
         const uint32_t* indicesDataPtr = reinterpret_cast<const uint32_t*>(payload.data() + codebookDataSize);
 
         std::vector<uint8_t> bcData(totalBlocks * blockSize);
-#pragma omp parallel for
+#pragma omp parallel for num_threads(numThreads)
         for (int64_t i = 0; i < totalBlocks; ++i) {
             uint32_t idx = indicesDataPtr[i];
             if (idx >= numCodebookEntries) {

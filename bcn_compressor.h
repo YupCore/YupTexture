@@ -28,6 +28,7 @@ public:
         uint32_t height,
         uint8_t channels,
         BCFormat format,
+        int numThreads,
         float quality = 1.0f,
         uint8_t alphaThreshold = 128
     ) {
@@ -58,7 +59,7 @@ public:
         CMP_CompressOptions options = {};
         options.dwSize = sizeof(options);
         options.fquality = quality;
-        options.dwnumThreads = 0;  // Use all available threads
+        options.dwnumThreads = numThreads;
 
         if (format == BCFormat::BC1 && channels == 4) {
             options.bDXT1UseAlpha = true;
@@ -79,6 +80,7 @@ public:
         uint32_t width,
         uint32_t height,
         BCFormat format,
+        int numThreads,
         float quality = 1.0f
     ) {
         CMP_Texture srcTexture = {};
@@ -108,7 +110,7 @@ public:
         CMP_CompressOptions options = {};
         options.dwSize = sizeof(options);
         options.fquality = quality;
-        options.dwnumThreads = 0; // Use all available threads
+        options.dwnumThreads = numThreads;
 
         CMP_ERROR error = CMP_ConvertTexture(&srcTexture, &destTexture, &options, nullptr);
         if (error != CMP_OK) {
