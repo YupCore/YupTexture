@@ -82,14 +82,25 @@ public:
     struct CompressionParams {
         BCFormat bcFormat = BCFormat::BC7;
         float bcQuality = 1.0f;
-        uint32_t vqCodebookSize = 256;
-        VQEncoder::DistanceMetric vqMetric = VQEncoder::DistanceMetric::PERCEPTUAL_LAB;
         int zstdLevel = 3;
         bool useMultithreading = true;
-        float vqFastModeSampleRatio = 1.0f;
         uint8_t alphaThreshold = 128;
         bool bypassVQ = false;
         bool bypassZstd = false;
+
+		// --- VQ Settings ---
+        float vq_FastModeSampleRatio = 1.0f;
+        float quality = 0.5f;
+        VQEncoder::DistanceMetric vq_Metric = VQEncoder::DistanceMetric::PERCEPTUAL_LAB;
+        uint32_t vq_min_cb_power = 4; // 2^4 = 16 entries at quality=0
+        uint32_t vq_max_cb_power = 10; // 2^10 = 1024 entries at quality=1
+        uint32_t vq_maxIterations = 32;
+
+        // --- Product Quantization (PQ) Settings ---
+        bool vq_use_product_quantization = true;
+        uint32_t vq_pq_subvectors = 8; // Split each 64-dim block into 8 sub-vectors
+        uint32_t vq_pq_sub_codebook_size = 256; // 256 centroids for each sub-vector
+
     };
 
     VQBCnCompressor() : zstdCtx(std::make_unique<ZstdContext>()) {}
@@ -162,9 +173,16 @@ public:
 
         // --- Standard VQ Path ---
         VQEncoder::Config vqConfig;
-        vqConfig.codebookSize = params.vqCodebookSize;
-        vqConfig.metric = params.vqMetric;
-        vqConfig.fastModeSampleRatio = params.vqFastModeSampleRatio;
+        vqConfig.metric = params.vq_Metric;
+        vqConfig.fastModeSampleRatio = params.vq_FastModeSampleRatio;
+		vqConfig.maxIterations = params.vq_maxIterations;
+		vqConfig.use_product_quantization = params.vq_use_product_quantization;
+		vqConfig.pq_subvectors = params.vq_pq_subvectors;
+		vqConfig.pq_sub_codebook_size = params.vq_pq_sub_codebook_size;
+		vqConfig.SetQuality(params.quality);
+		vqConfig.min_cb_power = params.vq_min_cb_power;
+		vqConfig.max_cb_power = params.vq_max_cb_power;
+
         VQEncoder vqEncoder(vqConfig);
         vqEncoder.SetFormat(params.bcFormat);
 

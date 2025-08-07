@@ -211,15 +211,15 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
         else
         {
 			params.bypassVQ = false; // VQ is used for Albedo without alpha
-            params.vqCodebookSize = 512;
-            params.vqMetric = VQEncoder::DistanceMetric::PERCEPTUAL_LAB;
+            params.quality = 0.8f;
+            params.vq_Metric = VQEncoder::DistanceMetric::PERCEPTUAL_LAB;
         }
         break;
     case Normal:
         std::cout << "Texture Type: Normal (Using BC5)\n";
         params.bcFormat = BCFormat::BC5;
-        params.vqCodebookSize = 256;
-        params.vqMetric = VQEncoder::DistanceMetric::RGB_SIMD;
+        params.quality = 0.8f;
+        params.vq_Metric = VQEncoder::DistanceMetric::RGB_SIMD;
         break;
     case AO:
     case Bump:
@@ -229,20 +229,20 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
     case Specular:
         std::cout << "Texture Type: Grayscale/Mask (Using BC4)\n";
         params.bcFormat = BCFormat::BC4;
-        params.vqCodebookSize = 128;
-        params.vqMetric = VQEncoder::DistanceMetric::RGB_SIMD;
+        params.quality = 0.5f;
+        params.vq_Metric = VQEncoder::DistanceMetric::RGB_SIMD;
         break;
     default:
         std::cout << "Texture Type: Unknown (Defaulting to BC7)\n";
         params.bcFormat = BCFormat::BC7;
-        params.vqCodebookSize = 256;
-        params.vqMetric = VQEncoder::DistanceMetric::RGB_SIMD;
+        params.quality = 0.8f;
+        params.vq_Metric = VQEncoder::DistanceMetric::RGB_SIMD;
         break;
     }
 
     std::string suffix = "_bc" + std::to_string(static_cast<int>(params.bcFormat));
     if (!params.bypassVQ) {
-        suffix += (params.vqMetric == VQEncoder::DistanceMetric::PERCEPTUAL_LAB ? "_lab" : "_rgb");
+        suffix += (params.vq_Metric == VQEncoder::DistanceMetric::PERCEPTUAL_LAB ? "_lab" : "_rgb");
     }
 
     std::cout << "Compression: BC" << static_cast<int>(params.bcFormat)
