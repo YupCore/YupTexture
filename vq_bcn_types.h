@@ -33,16 +33,18 @@ struct BCBlockSize {
         case BCFormat::BC5: return BC5;
         case BCFormat::BC6H: return BC6H;
         case BCFormat::BC7: return BC7;
-        default: return 16;
+        default: return 16; // Should not happen
         }
     }
 };
 
-// ADDED: Flags to indicate which compression steps were used.
+// --- MODIFIED: Added IS_HDR flag ---
+// Flags to indicate which compression steps were used.
 enum CompressionFlags : uint32_t {
     COMPRESSION_FLAGS_DEFAULT = 0,
     COMPRESSION_FLAGS_VQ_BYPASSED = 1 << 0, // VQ was skipped, payload is raw BCn data.
     COMPRESSION_FLAGS_ZSTD_BYPASSED = 1 << 1, // ZSTD was skipped, payload is not zstd-compressed.
+    COMPRESSION_FLAGS_IS_HDR = 1 << 2,      // The source texture was HDR (float data).
 };
 
 struct TextureInfo {
@@ -50,9 +52,8 @@ struct TextureInfo {
     uint32_t height;
     BCFormat format;
     uint32_t storedCodebookEntries;
-    uint32_t compressionFlags; // MODIFIED: Bitfield using CompressionFlags
+    uint32_t compressionFlags;
 
-    // ADDED: Default constructor for safety.
     TextureInfo() : width(0), height(0), format(BCFormat::BC1), storedCodebookEntries(0), compressionFlags(COMPRESSION_FLAGS_DEFAULT) {}
 
     size_t GetBlocksX() const { return (width + 3) / 4; }
@@ -73,9 +74,11 @@ struct VQCodebook {
 
 struct CompressedTexture {
     TextureInfo info;
+    // These are only used during compression and are not part of the final file format.
     VQCodebook codebook;
-    std::vector<uint32_t> indices;  // Index per block
-    std::vector<uint8_t> compressedData;  // Can be zstd compressed, or raw data if zstd is bypassed.
+    std::vector<uint32_t> indices;
+    // This holds the final data to be written to a file.
+    std::vector<uint8_t> compressedData;
 
     size_t GetUncompressedSize() const {
         return info.GetTotalBlocks() * BCBlockSize::GetSize(info.format);

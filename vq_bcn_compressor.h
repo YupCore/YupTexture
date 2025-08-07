@@ -5,9 +5,9 @@
 #include "bcn_compressor.h"
 #include <zstd.h>
 #include <thread>
-#include <stdexcept> // For std::runtime_error
+#include <stdexcept>
 #include <atomic>
-#include <cstring> // For memcpy
+#include <cstring>
 #include <string>
 
 class VQBCnCompressor {
@@ -34,46 +34,59 @@ private:
 
     std::unique_ptr<ZstdContext> zstdCtx;
 
+    // Helper to compress a payload with ZSTD
+    std::vector<uint8_t> compressWithZstd(const std::vector<uint8_t>& payload, int level, bool useMultithreading) {
+        size_t compBound = ZSTD_compressBound(payload.size());
+        std::vector<uint8_t> compressedPayload(compBound);
+        if (useMultithreading) {
+            ZSTD_CCtx_setParameter(zstdCtx->cctx, ZSTD_c_nbWorkers, std::thread::hardware_concurrency());
+        }
+        ZSTD_CCtx_setParameter(zstdCtx->cctx, ZSTD_c_compressionLevel, level);
+        size_t compressedSize = ZSTD_compress2(
+            zstdCtx->cctx,
+            compressedPayload.data(), compBound,
+            payload.data(), payload.size()
+        );
+        if (ZSTD_isError(compressedSize)) {
+            throw std::runtime_error("Zstd compression failed: " + std::string(ZSTD_getErrorName(compressedSize)));
+        }
+        compressedPayload.resize(compressedSize);
+        return compressedPayload;
+    }
+
 public:
     struct CompressionParams {
         BCFormat bcFormat = BCFormat::BC7;
-		// Internal quality setting for BCn compression
         float bcQuality = 1.0f;
-		// Should be set to 128 for grayscale textures, 256 for normals and 512 for albedo textures(recommended)
         uint32_t vqCodebookSize = 256;
         VQEncoder::DistanceMetric vqMetric = VQEncoder::DistanceMetric::PERCEPTUAL_LAB;
-		// Should be set in range 1-10, higher than that will cause massive slowdown
         int zstdLevel = 3;
         bool useMultithreading = true;
-		// 1.0f means use all samples, 0.5f means use half of the samples, etc
         float vqFastModeSampleRatio = 1.0f;
-
-		uint8_t alphaThreshold = 128; // Threshold for alpha channel, default is 128
-
-        // Do not compress with VQ
+        uint8_t alphaThreshold = 128;
         bool bypassVQ = false;
-		// Do not compress with ZSTD
         bool bypassZstd = false;
     };
 
     VQBCnCompressor() : zstdCtx(std::make_unique<ZstdContext>()) {}
 
+    // --- MODIFIED: LDR Compression entry point ---
     CompressedTexture Compress(
         const uint8_t* rgbaData,
         uint32_t width,
         uint32_t height,
-		uint8_t channels,
+        uint8_t channels,
         const CompressionParams& params
     ) {
         CompressedTexture result;
         result.info.width = width;
         result.info.height = height;
         result.info.format = params.bcFormat;
-        result.info.compressionFlags = COMPRESSION_FLAGS_DEFAULT; // Start with default
+        result.info.compressionFlags = COMPRESSION_FLAGS_DEFAULT;
 
         // --- 1. Initial BCn Compression ---
         auto bcData = bcnCompressor.CompressRGBA(
-            rgbaData, width, height, channels, params.bcFormat, params.bcQuality
+            rgbaData, width, height, channels, params.bcFormat, params.bcQuality, params.alphaThreshold
         );
         if (bcData.empty()) {
             throw std::runtime_error("BCn compression failed");
@@ -83,30 +96,14 @@ public:
         // --- 2. Handle VQ Bypass ---
         if (params.bypassVQ) {
             result.info.compressionFlags |= COMPRESSION_FLAGS_VQ_BYPASSED;
-            result.info.storedCodebookEntries = 0; // No codebook
+            result.info.storedCodebookEntries = 0;
 
             if (params.bypassZstd) {
-                // VQ bypassed, ZSTD bypassed: store raw BCn data
                 result.info.compressionFlags |= COMPRESSION_FLAGS_ZSTD_BYPASSED;
                 result.compressedData = std::move(bcData);
             }
             else {
-                // VQ bypassed, ZSTD enabled: compress raw BCn data with zstd
-                size_t compBound = ZSTD_compressBound(bcData.size());
-                result.compressedData.resize(compBound);
-                if (params.useMultithreading) {
-                    ZSTD_CCtx_setParameter(zstdCtx->cctx, ZSTD_c_nbWorkers, std::thread::hardware_concurrency());
-                }
-                ZSTD_CCtx_setParameter(zstdCtx->cctx, ZSTD_c_compressionLevel, params.zstdLevel);
-                size_t compressedSize = ZSTD_compress2(
-                    zstdCtx->cctx,
-                    result.compressedData.data(), compBound,
-                    bcData.data(), bcData.size()
-                );
-                if (ZSTD_isError(compressedSize)) {
-                    throw std::runtime_error("Zstd compression of raw BCn data failed: " + std::string(ZSTD_getErrorName(compressedSize)));
-                }
-                result.compressedData.resize(compressedSize);
+                result.compressedData = compressWithZstd(bcData, params.zstdLevel, params.useMultithreading);
             }
             return result;
         }
@@ -120,11 +117,10 @@ public:
         vqEncoder.SetFormat(params.bcFormat);
 
         const size_t numBlocks = bcData.size() / blockSize;
-        size_t numGroupedBlocks;
         std::vector<std::vector<uint8_t>> rgbaBlocks(numBlocks);
 #pragma omp parallel for
         for (int64_t i = 0; i < numBlocks; ++i) {
-            rgbaBlocks[i] = bcnCompressor.DecompressToRGBA(&bcData[i * blockSize], 4, 4, params.bcFormat); // This is needed to correctly compress alpha
+            rgbaBlocks[i] = bcnCompressor.DecompressToRGBA(&bcData[i * blockSize], 4, 4, params.bcFormat);
         }
 
         std::vector<std::vector<uint8_t>> rgbaCentroids;
@@ -144,50 +140,66 @@ public:
         }
         std::memcpy(payloadData.data() + offset, result.indices.data(), indicesDataSize);
 
-        // Clear temporary data
         result.codebook.entries.clear();
         result.indices.clear();
 
         if (params.bypassZstd) {
-            // VQ enabled, ZSTD bypassed: store raw codebook+indices payload
             result.info.compressionFlags |= COMPRESSION_FLAGS_ZSTD_BYPASSED;
             result.compressedData = std::move(payloadData);
         }
         else {
-            // VQ enabled, ZSTD enabled: compress payload (original path)
-            size_t compBound = ZSTD_compressBound(payloadData.size());
-            result.compressedData.resize(compBound);
-            if (params.useMultithreading) {
-                ZSTD_CCtx_setParameter(zstdCtx->cctx, ZSTD_c_nbWorkers, std::thread::hardware_concurrency());
-            }
-            ZSTD_CCtx_setParameter(zstdCtx->cctx, ZSTD_c_compressionLevel, params.zstdLevel);
-            size_t compressedSize = ZSTD_compress2(
-                zstdCtx->cctx,
-                result.compressedData.data(), compBound,
-                payloadData.data(), payloadData.size()
-            );
-            if (ZSTD_isError(compressedSize)) {
-                throw std::runtime_error("Zstd compression failed: " + std::string(ZSTD_getErrorName(compressedSize)));
-            }
-            result.compressedData.resize(compressedSize);
+            result.compressedData = compressWithZstd(payloadData, params.zstdLevel, params.useMultithreading);
         }
 
         return result;
     }
+
+    // --- ADDED: HDR Compression entry point ---
+    CompressedTexture Compress(
+        const float* rgbaData,
+        uint32_t width,
+        uint32_t height,
+        const CompressionParams& params
+    ) {
+        CompressedTexture result;
+        result.info.width = width;
+        result.info.height = height;
+        result.info.format = params.bcFormat; // Should be BC6H
+        result.info.compressionFlags = COMPRESSION_FLAGS_IS_HDR | COMPRESSION_FLAGS_VQ_BYPASSED;
+        result.info.storedCodebookEntries = 0;
+
+        // --- 1. BCn Compression for HDR ---
+        // VQ is always bypassed for HDR
+        auto bcData = bcnCompressor.CompressHDR(
+            rgbaData, width, height, params.bcFormat, params.bcQuality
+        );
+        if (bcData.empty()) {
+            throw std::runtime_error("HDR BCn compression failed");
+        }
+
+        // --- 2. Optional ZSTD Compression ---
+        if (params.bypassZstd) {
+            result.info.compressionFlags |= COMPRESSION_FLAGS_ZSTD_BYPASSED;
+            result.compressedData = std::move(bcData);
+        }
+        else {
+            result.compressedData = compressWithZstd(bcData, params.zstdLevel, params.useMultithreading);
+        }
+
+        return result;
+    }
+
 
     std::vector<uint8_t> DecompressToBCn(const CompressedTexture& compressed) {
         if (compressed.compressedData.empty()) {
             throw std::runtime_error("Compressed data stream is empty. Cannot decompress.");
         }
 
-        // --- 1. Handle ZSTD Bypass ---
         std::vector<uint8_t> payload;
         if (compressed.info.compressionFlags & COMPRESSION_FLAGS_ZSTD_BYPASSED) {
-            // Data is not zstd-compressed, the payload is the raw data.
             payload = compressed.compressedData;
         }
         else {
-            // Decompress the ZSTD stream to get the payload
             size_t decompressedSize = ZSTD_getFrameContentSize(compressed.compressedData.data(), compressed.compressedData.size());
             if (decompressedSize == ZSTD_CONTENTSIZE_ERROR || decompressedSize == ZSTD_CONTENTSIZE_UNKNOWN) {
                 throw std::runtime_error("Failed to get ZSTD decompressed size. The frame may be malformed or not contain the content size.");
@@ -203,13 +215,10 @@ public:
             }
         }
 
-        // --- 2. Handle VQ Bypass ---
         if (compressed.info.compressionFlags & COMPRESSION_FLAGS_VQ_BYPASSED) {
-            // If VQ was bypassed, the payload is already the final BCn data.
             return payload;
         }
 
-        // --- 3. Standard VQ Reconstruction Path ---
         const size_t blockSize = BCBlockSize::GetSize(compressed.info.format);
         const uint32_t numCodebookEntries = compressed.info.storedCodebookEntries;
         const size_t codebookDataSize = numCodebookEntries * blockSize;
@@ -228,10 +237,6 @@ public:
         for (int64_t i = 0; i < totalBlocks; ++i) {
             uint32_t idx = indicesDataPtr[i];
             if (idx >= numCodebookEntries) {
-                // This should not happen with a valid file, but as a safeguard:
-                // You could fill with a default color block or leave it uninitialized.
-                // For now, we just proceed, which might copy invalid data if the index is out of bounds.
-                // A robust solution would be to check and handle.
                 continue;
             }
             std::memcpy(bcData.data() + i * blockSize, codebookDataPtr + idx * blockSize, blockSize);
@@ -240,9 +245,24 @@ public:
         return bcData;
     }
 
+    // --- MODIFIED: DecompressToRGBA now dispatches based on HDR flag ---
     std::vector<uint8_t> DecompressToRGBA(const CompressedTexture& compressed) {
+        if (compressed.info.compressionFlags & COMPRESSION_FLAGS_IS_HDR) {
+            throw std::runtime_error("Cannot decompress HDR texture to 8-bit RGBA. Use DecompressToRGBAF instead.");
+        }
         auto bcData = DecompressToBCn(compressed);
         return bcnCompressor.DecompressToRGBA(
+            bcData.data(), compressed.info.width, compressed.info.height, compressed.info.format
+        );
+    }
+
+    // --- ADDED: DecompressToRGBAF for HDR textures ---
+    std::vector<float> DecompressToRGBAF(const CompressedTexture& compressed) {
+        if (!(compressed.info.compressionFlags & COMPRESSION_FLAGS_IS_HDR)) {
+            throw std::runtime_error("Cannot decompress LDR texture to float RGBA. Use DecompressToRGBA instead.");
+        }
+        auto bcData = DecompressToBCn(compressed);
+        return bcnCompressor.DecompressToRGBAF(
             bcData.data(), compressed.info.width, compressed.info.height, compressed.info.format
         );
     }
