@@ -203,7 +203,8 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
         break;
     case Albedo:
         params.bcFormat = BCFormat::BC1;
-        std::cout << "Texture Type: Albedo (Using BC7 for high quality, or BC1 if alpha is present)\n";
+        std::cout << "Texture Type: Albedo using BC1\n";
+		params.alphaThreshold = 1; // Use alpha threshold for BC1 compression
         params.quality = 0.8f;
         params.vq_Metric = VQEncoder::DistanceMetric::PERCEPTUAL_LAB;
         break;
@@ -247,7 +248,7 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
             CompressedTexture compressed;
             // Call the correct Compress overload based on whether the image is HDR
             if (image.isHDR) {
-                compressed = compressor.Compress(std::get<std::vector<float>>(image.data).data(), image.width, image.height, params);
+                compressed = compressor.CompressHDR(std::get<std::vector<float>>(image.data).data(), image.width, image.height, params);
             }
             else {
                 compressed = compressor.Compress(std::get<std::vector<uint8_t>>(image.data).data(), image.width, image.height, image.channels, params);

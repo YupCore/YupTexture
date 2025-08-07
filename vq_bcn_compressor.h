@@ -128,7 +128,7 @@ public:
         }
     }
 
-
+	// Main compression function for LDR textures
     CompressedTexture Compress(
         const uint8_t* rgbaData,
         uint32_t width,
@@ -223,7 +223,8 @@ public:
         return result;
     }
 
-    CompressedTexture Compress(
+	// A distinct method for HDR textures
+    CompressedTexture CompressHDR(
         const float* rgbaData,
         uint32_t width,
         uint32_t height,
