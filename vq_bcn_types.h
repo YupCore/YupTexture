@@ -103,7 +103,7 @@ struct CompressionParams {
     int zstdLevel = 3;
     int numThreads = 16; // default to 16 threads
     uint8_t alphaThreshold = 128;
-	bool useVQ = true; // Vector quantization enabled by default. NOTE: VQ is a very destructive compression method, and should be used only when size is the only concern.
+	bool useVQ = true; // Vector quantization enabled by default. NOTE: VQ is a very destructive compression method, and should only be used when size is the main concern.
     bool useZstd = true;
 
     // --- VQ Settings ---

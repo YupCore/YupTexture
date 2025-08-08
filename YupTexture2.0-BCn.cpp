@@ -189,7 +189,7 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
 
     CompressionParams params;
     params.bcQuality = 1.0f;
-    params.zstdLevel = 18;
+    params.zstdLevel = 16;
     params.numThreads = 16;
     params.useVQ = true;
     params.useZstd = true;
@@ -200,7 +200,7 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
         params.bcFormat = BCFormat::BC6H;
         // --- MODIFIED: Enable VQ for HDR and set params ---
 		params.bcQuality = 0.25f; // Use a lower quality for HDR to set reasonable compression time
-        params.quality = 1.0f; // Use a high quality for HDR VQ
+        params.quality = 0.9f; // Use a high quality for HDR VQ
         params.vq_min_cb_power = 6;  // 64 entries
         params.vq_max_cb_power = 12; // 4096 entriess
         params.vq_FastModeSampleRatio = 0.5f;
