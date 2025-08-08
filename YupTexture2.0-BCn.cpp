@@ -189,10 +189,10 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
 
     CompressionParams params;
     params.bcQuality = 1.0f;
-    params.zstdLevel = 10;
+    params.zstdLevel = 18;
     params.numThreads = 16;
-    params.bypassVQ = false;
-    params.bypassZstd = false;
+    params.useVQ = true;
+    params.useZstd = true;
 
     switch (type) {
     case HDR:
@@ -201,7 +201,6 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
         // --- MODIFIED: Enable VQ for HDR and set params ---
 		params.bcQuality = 0.25f; // Use a lower quality for HDR to set reasonable compression time
         params.quality = 1.0f; // Use a high quality for HDR VQ
-        // VQ quality for HDR might need different tuning than for LDR
         params.vq_min_cb_power = 6;  // 64 entries
         params.vq_max_cb_power = 12; // 4096 entriess
         params.vq_FastModeSampleRatio = 0.5f;
@@ -239,13 +238,13 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
     }
 
     std::string suffix = "_bc" + std::to_string(static_cast<int>(params.bcFormat));
-    if (!params.bypassVQ) {
+    if (params.useVQ) {
         suffix += (params.vq_Metric == DistanceMetric::PERCEPTUAL_LAB ? "_lab" : "_rgb");
     }
 
     std::cout << "Compression: BC" << static_cast<int>(params.bcFormat)
-        << ", VQ Bypass: " << (params.bypassVQ ? "Yes" : "No") <<
-        ", ZSTD Bypass: " << (params.bypassZstd ? "Yes" : "No") << std::endl;
+        << ", Use VQ: " << (params.useVQ ? "Yes" : "No") <<
+        ", Use ZSTD: " << (params.useZstd ? "Yes" : "No") << std::endl;
 
     try {
         std::string out_name_bin = "output/" + filePath.stem().string() + suffix + ".yupt2";
@@ -297,10 +296,10 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
         outputImage.isHDR = image.isHDR;
 
         if (image.isHDR) {
-            outputImage.data = compressor.DecompressToRGBAF(loadedTexture);
+            outputImage.data = compressor.DecompressToRGBAF(loadedTexture, true);
         }
         else {
-            outputImage.data = compressor.DecompressToRGBA(loadedTexture);
+            outputImage.data = compressor.DecompressToRGBA(loadedTexture, true);
             auto end_decompress = std::chrono::high_resolution_clock::now();
             std::cout << "Decompression to RGBA finished in " << std::fixed << std::setprecision(4)
                 << std::chrono::duration<double>(end_decompress - start_decompress).count() << "s.\n";

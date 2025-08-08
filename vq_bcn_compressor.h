@@ -102,6 +102,118 @@ public:
         }
     }
 
+    void ApplyDeblockingFilter(
+        std::vector<uint8_t>& rgbaData,
+        uint32_t width,
+        uint32_t height,
+        int numThreads = 16
+    )
+    {
+        const uint32_t numBlocksX = (width + 3) / 4;
+        const uint32_t numBlocksY = (height + 3) / 4;
+        const size_t pitch = width * 4;
+
+#pragma omp parallel for num_threads(numThreads)
+        for (int64_t by = 0; by < numBlocksY; ++by) {
+            for (int64_t bx = 0; bx < numBlocksX; ++bx) {
+                // Apply horizontal filter along the left edge of blocks (except the very first column)
+                if (bx > 0) {
+                    uint32_t x_seam = bx * 4;
+                    for (uint32_t y = by * 4; y < (by + 1) * 4 && y < height; ++y) {
+                        uint8_t* p_left = &rgbaData[(y * width + x_seam - 1) * 4];
+                        uint8_t* p_center = &rgbaData[(y * width + x_seam) * 4];
+
+                        // Simple average for RGB channels
+                        p_left[0] = (p_left[0] + p_center[0]) / 2;
+                        p_left[1] = (p_left[1] + p_center[1]) / 2;
+                        p_left[2] = (p_left[2] + p_center[2]) / 2;
+                        // You can choose to blend alpha or not, often it's better to leave it sharp
+                        // p_left[3] = (p_left[3] + p_center[3]) / 2;
+
+                        // Write the same value to the center pixel to avoid a new seam
+                        p_center[0] = p_left[0];
+                        p_center[1] = p_left[1];
+                        p_center[2] = p_left[2];
+                        // p_center[3] = p_left[3];
+                    }
+                }
+                // Apply vertical filter along the top edge of blocks (except the very first row)
+                if (by > 0) {
+                    uint32_t y_seam = by * 4;
+                    for (uint32_t x = bx * 4; x < (bx + 1) * 4 && x < width; ++x) {
+                        uint8_t* p_top = &rgbaData[((y_seam - 1) * width + x) * 4];
+                        uint8_t* p_center = &rgbaData[(y_seam * width + x) * 4];
+
+                        // Simple average
+                        p_top[0] = (p_top[0] + p_center[0]) / 2;
+                        p_top[1] = (p_top[1] + p_center[1]) / 2;
+                        p_top[2] = (p_top[2] + p_center[2]) / 2;
+
+                        // Write back
+                        p_center[0] = p_top[0];
+                        p_center[1] = p_top[1];
+                        p_center[2] = p_top[2];
+                    }
+                }
+            }
+        }
+    }
+
+    void ApplyDeblockingFilter( // New overload for HDR data
+        std::vector<float>& rgbaData,
+        uint32_t width,
+        uint32_t height,
+        int numThreads = 16
+    )
+    {
+        const uint32_t numBlocksX = (width + 3) / 4;
+        const uint32_t numBlocksY = (height + 3) / 4;
+
+#pragma omp parallel for num_threads(numThreads)
+        for (int64_t by = 0; by < numBlocksY; ++by) {
+            for (int64_t bx = 0; bx < numBlocksX; ++bx) {
+                // Apply horizontal filter along the left edge of blocks
+                if (bx > 0) {
+                    uint32_t x_seam = bx * 4;
+                    for (uint32_t y = by * 4; y < (by + 1) * 4 && y < height; ++y) {
+                        float* p_left = &rgbaData[(y * width + x_seam - 1) * 4];
+                        float* p_center = &rgbaData[(y * width + x_seam) * 4];
+
+                        // Blend RGB channels using floating point math
+                        const float r = (p_left[0] + p_center[0]) * 0.5f;
+                        const float g = (p_left[1] + p_center[1]) * 0.5f;
+                        const float b = (p_left[2] + p_center[2]) * 0.5f;
+                        // Note: Alpha is not blended to preserve its original values.
+
+                        // Write the smoothed value to both pixels to remove the seam
+                        p_left[0] = r; p_center[0] = r;
+                        p_left[1] = g; p_center[1] = g;
+                        p_left[2] = b; p_center[2] = b;
+                    }
+                }
+
+                // Apply vertical filter along the top edge of blocks
+                if (by > 0) {
+                    uint32_t y_seam = by * 4;
+                    for (uint32_t x = bx * 4; x < (bx + 1) * 4 && x < width; ++x) {
+                        float* p_top = &rgbaData[((y_seam - 1) * width + x) * 4];
+                        float* p_center = &rgbaData[(y_seam * width + x) * 4];
+
+                        // Blend RGB channels
+                        const float r = (p_top[0] + p_center[0]) * 0.5f;
+                        const float g = (p_top[1] + p_center[1]) * 0.5f;
+                        const float b = (p_top[2] + p_center[2]) * 0.5f;
+
+                        // Write back
+                        p_top[0] = r; p_center[0] = r;
+                        p_top[1] = g; p_center[1] = g;
+                        p_top[2] = b; p_center[2] = b;
+                    }
+                }
+            }
+        }
+    }
+
 	// Main compression function for LDR textures
     CompressedTexture Compress(
         const uint8_t* rgbaData,
@@ -117,10 +229,7 @@ public:
         result.info.compressionFlags = COMPRESSION_FLAGS_DEFAULT;
 
         // --- ADDED: Check for large texture to enable LDM ---
-        bool enableLdm = false;
-        if(width >= 4000 || height >= 4000) { // Enable LDM for large textures
-			enableLdm = true;
-		}
+        bool enableLdm = (width >= 4000 || height >= 4000);
 
         auto bcData = bcnCompressor.CompressRGBA(
             rgbaData, width, height, channels, params.bcFormat,
@@ -132,11 +241,11 @@ public:
         const size_t blockSize = BCBlockSize::GetSize(params.bcFormat);
 
         // --- Handle VQ Bypass ---
-        if (params.bypassVQ) {
+        if (!params.useVQ) {
             result.info.compressionFlags |= COMPRESSION_FLAGS_VQ_BYPASSED;
             result.info.storedCodebookEntries = 0;
 
-            if (params.bypassZstd) {
+            if (!params.useZstd) {
                 result.info.compressionFlags |= COMPRESSION_FLAGS_ZSTD_BYPASSED;
                 result.compressedData = std::move(bcData);
             }
@@ -184,7 +293,7 @@ public:
         result.codebook.entries.clear();
         result.indices.clear();
 
-        if (params.bypassZstd) {
+        if (!params.useZstd) {
             result.info.compressionFlags |= COMPRESSION_FLAGS_ZSTD_BYPASSED;
             result.compressedData = std::move(payloadData);
         }
@@ -207,7 +316,7 @@ public:
         }
 
         // --- Handle VQ Bypass ---
-        if (params.bypassVQ) {
+        if (!params.useVQ) {
             CompressedTexture result;
             result.info.width = width;
             result.info.height = height;
@@ -221,7 +330,7 @@ public:
             if (bcData.empty()) {
                 throw std::runtime_error("HDR BCn compression failed");
             }
-            if (params.bypassZstd) {
+            if (!params.useZstd) {
                 result.info.compressionFlags |= COMPRESSION_FLAGS_ZSTD_BYPASSED;
                 result.compressedData = std::move(bcData);
             }
@@ -297,7 +406,7 @@ public:
         result.indices.clear();
 
         // 4. Compress final payload with Zstd
-        if (params.bypassZstd) {
+        if (!params.useZstd) {
             result.info.compressionFlags |= COMPRESSION_FLAGS_ZSTD_BYPASSED;
             result.compressedData = std::move(payloadData);
         }
@@ -383,23 +492,37 @@ public:
         return bcData;
     }
 
-    std::vector<uint8_t> DecompressToRGBA(const CompressedTexture& compressed) {
+    std::vector<uint8_t> DecompressToRGBA(const CompressedTexture& compressed, bool applyDeblocking) {
         if (compressed.info.compressionFlags & COMPRESSION_FLAGS_IS_HDR) {
             throw std::runtime_error("Cannot decompress HDR texture to 8-bit RGBA. Use DecompressToRGBAF instead.");
         }
         auto bcData = DecompressToBCn(compressed);
-        return bcnCompressor.DecompressToRGBA(
+        auto rgbaData = bcnCompressor.DecompressToRGBA(
             bcData.data(), compressed.info.width, compressed.info.height, compressed.info.format
         );
+
+        // --- ADDED: Apply filter if requested ---
+        if (applyDeblocking && !rgbaData.empty()) {
+            ApplyDeblockingFilter(rgbaData, compressed.info.width, compressed.info.height);
+        }
+
+        return rgbaData;
     }
 
-    std::vector<float> DecompressToRGBAF(const CompressedTexture& compressed) {
+    std::vector<float> DecompressToRGBAF(const CompressedTexture& compressed, bool applyDeblocking) {
         if (!(compressed.info.compressionFlags & COMPRESSION_FLAGS_IS_HDR)) {
             throw std::runtime_error("Cannot decompress LDR texture to float RGBA. Use DecompressToRGBA instead.");
         }
         auto bcData = DecompressToBCn(compressed);
-        return bcnCompressor.DecompressToRGBAF(
+        auto rgbaFloatData = bcnCompressor.DecompressToRGBAF(
             bcData.data(), compressed.info.width, compressed.info.height, compressed.info.format
         );
+
+        // --- ADDED: Apply filter if requested ---
+        if (applyDeblocking && !rgbaFloatData.empty()) {
+            ApplyDeblockingFilter(rgbaFloatData, compressed.info.width, compressed.info.height);
+        }
+
+        return rgbaFloatData;
     }
 };
