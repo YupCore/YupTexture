@@ -200,10 +200,11 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
         params.bcFormat = BCFormat::BC6H;
         // --- MODIFIED: Enable VQ for HDR and set params ---
 		params.bcQuality = 0.25f; // Use a lower quality for HDR to set reasonable compression time
-        params.quality = 0.9f; // Use a high quality for HDR VQ
+        params.quality = 1.0f; // Use a high quality for HDR VQ
         params.vq_min_cb_power = 6;  // 64 entries
         params.vq_max_cb_power = 12; // 4096 entriess
-        params.vq_FastModeSampleRatio = 0.5f;
+        params.vq_FastModeSampleRatio = 1.0f;
+        params.vq_maxIterations = 64;         // Allow more iterations for K-Means to converge
         break;
     case Albedo:
         params.bcFormat = BCFormat::BC1;
@@ -332,7 +333,7 @@ int main(int argc, char** argv) {
     try {
         VQBCnCompressor compressor;
         fs::create_directory("output");
-        std::string test_dir = "test_texture_set";
+        std::string test_dir = "test_assets";
         if (!fs::exists(test_dir)) {
             std::cerr << "Error: Test directory '" << test_dir << "' not found." << std::endl; return 1;
         }

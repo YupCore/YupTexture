@@ -124,25 +124,10 @@ private:
 
 	// HDR oklab color space math
 
-    // --- OPTIMIZATION: HELPER FUNCTIONS ---
-    // These helpers convert an Oklab block's L-channel to/from a perceptual space.
-    // This is now done once per block, instead of repeatedly in the distance function.
-    inline void OklabBlockToPerceptual(OklabBlock& block) const {
-        for (size_t i = 0; i < 16; ++i) {
-            block[i * 4 + 0] = Oklab::L_to_perceptual(block[i * 4 + 0]);
-        }
-    }
-
-    inline void PerceptualBlockToOklab(OklabBlock& block) const {
-        for (size_t i = 0; i < 16; ++i) {
-            block[i * 4 + 0] = Oklab::perceptual_to_L(block[i * 4 + 0]);
-        }
-    }
-
     // --- OPTIMIZATION: DISTANCE FUNCTION ---
     // The distance function now operates on pre-transformed "perceptual" Oklab data.
     // It is much faster as it no longer contains expensive math operations.
-    float OklabBlockDistanceSq_SIMD(const OklabBlock& labA, const OklabBlock& labB) const {
+    float OklabFloatBlockDistanceSq_SIMD(const OklabFloatBlock& labA, const OklabFloatBlock& labB) const {
         __m256 sum_sq_diff = _mm256_setzero_ps();
 
         // Weight for the difference. L-channel's squared difference will be weighted by 4.0.
@@ -528,24 +513,25 @@ inline VQCodebook VQEncoder::BuildCodebookHDR(const std::vector<std::vector<floa
     if (numBlocks == 0) return {};
 
     // 2. Pre-transformation: Convert to perceptual Oklab *once*.
-    std::vector<OklabBlock> perceptualOklabBlocks(numBlocks);
+    //    FIX: To handle HDR data correctly, we MUST apply a tonemapper (like ACES)
+    //    to bring the data into a perceptually-meaningful range before Oklab conversion.
+    std::vector<OklabFloatBlock> perceptualOklabFloatBlocks(numBlocks);
 #pragma omp parallel for num_threads(params.numThreads)
     for (int64_t i = 0; i < numBlocks; ++i) {
-        perceptualOklabBlocks[i] = Oklab::RgbaFloatBlockToOklabBlock(*blocksToProcess[i]);
-        OklabBlockToPerceptual(perceptualOklabBlocks[i]);
+        perceptualOklabFloatBlocks[i] = Oklab::RgbaFloatBlockToOklabFloatBlock(*blocksToProcess[i], true); // ENABLE ACES TONEMAP
     }
 
     // 3. K-Means++ Initialization (on pre-transformed perceptual data)
-    std::vector<OklabBlock> perceptualOklabCentroids(config.codebookSize);
+    std::vector<OklabFloatBlock> perceptualOklabCentroids(config.codebookSize);
     std::vector<float> minDistSq(numBlocks, std::numeric_limits<float>::max());
     std::uniform_int_distribution<size_t> distrib(0, numBlocks - 1);
-    perceptualOklabCentroids[0] = perceptualOklabBlocks[distrib(rng)];
+    perceptualOklabCentroids[0] = perceptualOklabFloatBlocks[distrib(rng)];
 
     for (uint32_t i = 1; i < config.codebookSize; ++i) {
         double current_sum = 0.0;
 #pragma omp parallel for num_threads(params.numThreads) reduction(+:current_sum)
         for (int64_t j = 0; j < numBlocks; ++j) {
-            float d = OklabBlockDistanceSq_SIMD(perceptualOklabBlocks[j], perceptualOklabCentroids[i - 1]);
+            float d = OklabFloatBlockDistanceSq_SIMD(perceptualOklabFloatBlocks[j], perceptualOklabCentroids[i - 1]);
             minDistSq[j] = std::min(d, minDistSq[j]);
             current_sum += minDistSq[j];
         }
@@ -559,7 +545,7 @@ inline VQCodebook VQEncoder::BuildCodebookHDR(const std::vector<std::vector<floa
         for (size_t j = 0; j < numBlocks; ++j) {
             cumulative_p += minDistSq[j];
             if (cumulative_p >= p) {
-                perceptualOklabCentroids[i] = perceptualOklabBlocks[j];
+                perceptualOklabCentroids[i] = perceptualOklabFloatBlocks[j];
                 break;
             }
         }
@@ -575,7 +561,7 @@ inline VQCodebook VQEncoder::BuildCodebookHDR(const std::vector<std::vector<floa
             float min_d = std::numeric_limits<float>::max();
             uint32_t best_c = 0;
             for (uint32_t c = 0; c < config.codebookSize; ++c) {
-                float d = OklabBlockDistanceSq_SIMD(perceptualOklabBlocks[i], perceptualOklabCentroids[c]);
+                float d = OklabFloatBlockDistanceSq_SIMD(perceptualOklabFloatBlocks[i], perceptualOklabCentroids[c]);
                 if (d < min_d) { min_d = d; best_c = c; }
             }
             errors[i] = min_d;
@@ -583,17 +569,17 @@ inline VQCodebook VQEncoder::BuildCodebookHDR(const std::vector<std::vector<floa
         }
         if (!hasChanged && iter > 1) break;
 
-        std::vector<OklabBlock> newCentroids(config.codebookSize, OklabBlock(64, 0.0f));
+        std::vector<OklabFloatBlock> newCentroids(config.codebookSize, OklabFloatBlock(64, 0.0f));
         std::vector<uint32_t> counts(config.codebookSize, 0);
 #pragma omp parallel num_threads(params.numThreads)
         {
-            std::vector<OklabBlock> localNewCentroids(config.codebookSize, OklabBlock(64, 0.0f));
+            std::vector<OklabFloatBlock> localNewCentroids(config.codebookSize, OklabFloatBlock(64, 0.0f));
             std::vector<uint32_t> localCounts(config.codebookSize, 0);
 #pragma omp for nowait
             for (int64_t i = 0; i < numBlocks; ++i) {
                 uint32_t c_idx = assignments[i];
                 localCounts[c_idx]++;
-                for (size_t j = 0; j < 64; ++j) localNewCentroids[c_idx][j] += perceptualOklabBlocks[i][j];
+                for (size_t j = 0; j < 64; ++j) localNewCentroids[c_idx][j] += perceptualOklabFloatBlocks[i][j];
             }
 #pragma omp critical
             {
@@ -611,7 +597,7 @@ inline VQCodebook VQEncoder::BuildCodebookHDR(const std::vector<std::vector<floa
             }
             else {
                 size_t worstBlockIdx = std::distance(errors.begin(), std::max_element(std::execution::par, errors.begin(), errors.end()));
-                perceptualOklabCentroids[c] = perceptualOklabBlocks[worstBlockIdx];
+                perceptualOklabCentroids[c] = perceptualOklabFloatBlocks[worstBlockIdx];
                 errors[worstBlockIdx] = 0.0f;
             }
         }
@@ -621,20 +607,23 @@ inline VQCodebook VQEncoder::BuildCodebookHDR(const std::vector<std::vector<floa
     outRgbaCentroids.resize(config.codebookSize);
 #pragma omp parallel for num_threads(params.numThreads)
     for (int64_t i = 0; i < config.codebookSize; ++i) {
-        OklabBlock finalOklabCentroid = perceptualOklabCentroids[i];
-        PerceptualBlockToOklab(finalOklabCentroid);
-        outRgbaCentroids[i] = Oklab::OklabBlockToRgbaFloatBlock(finalOklabCentroid);
+        OklabFloatBlock finalOklabCentroid = perceptualOklabCentroids[i];
+        // FIX: Convert back to RGBA by applying the INVERSE tonemapper. This is critical
+        // to restore the original high dynamic range from the perceptual Oklab space.
+        // OklabFloatBlockToRgbaFloatBlock(block, clampForLDR, applyACESInverse)
+        outRgbaCentroids[i] = Oklab::OklabFloatBlockToRgbaFloatBlock(finalOklabCentroid, false, true); // ENABLE ACES INVERSE
     }
 
     VQCodebook finalCodebook(BCBlockSize::GetSize(bcFormat), config.codebookSize);
     finalCodebook.entries.resize(config.codebookSize);
 #pragma omp parallel for num_threads(params.numThreads)
     for (int64_t i = 0; i < config.codebookSize; ++i) {
-        finalCodebook.entries[i] = CompressSingleBlockHDR(outRgbaCentroids[i], params.numThreads, params.bcQuality);
+        // QUALITY IMPROVEMENT: Compress the codebook entries themselves with max quality.
+        // This has a negligible impact on final size but ensures the VQ building blocks are as accurate as possible.
+        finalCodebook.entries[i] = CompressSingleBlockHDR(outRgbaCentroids[i], params.numThreads, 1.0f);
     }
     return finalCodebook;
 }
-
 
 inline std::vector<uint32_t> VQEncoder::QuantizeBlocksHDR(const std::vector<std::vector<float>>& rgbaFloatBlocks, const std::vector<std::vector<float>>& rgbaCentroids, const CompressionParams& params) {
     size_t numBlocks = rgbaFloatBlocks.size();
@@ -643,23 +632,23 @@ inline std::vector<uint32_t> VQEncoder::QuantizeBlocksHDR(const std::vector<std:
     uint32_t codebookSize = static_cast<uint32_t>(rgbaCentroids.size());
 
     // 1. Convert all final centroids to perceptual Oklab space once.
-    std::vector<OklabBlock> perceptualLabCentroids(codebookSize);
+    //    FIX: Must apply the same ACES tonemapper used during codebook creation.
+    std::vector<OklabFloatBlock> perceptualLabCentroids(codebookSize);
 #pragma omp parallel for num_threads(params.numThreads)
     for (int64_t i = 0; i < codebookSize; ++i) {
-        perceptualLabCentroids[i] = Oklab::RgbaFloatBlockToOklabBlock(rgbaCentroids[i]);
-        OklabBlockToPerceptual(perceptualLabCentroids[i]);
+        perceptualLabCentroids[i] = Oklab::RgbaFloatBlockToOklabFloatBlock(rgbaCentroids[i], true); // ENABLE ACES TONEMAP
     }
 
     // 2. Find best index for each block, converting to perceptual space as we go.
 #pragma omp parallel for num_threads(params.numThreads)
     for (int64_t i = 0; i < numBlocks; ++i) {
-        OklabBlock perceptualLabBlock = Oklab::RgbaFloatBlockToOklabBlock(rgbaFloatBlocks[i]);
-        OklabBlockToPerceptual(perceptualLabBlock);
+        // FIX: Must apply the ACES tonemapper to incoming blocks to match the centroid space.
+        OklabFloatBlock perceptualLabBlock = Oklab::RgbaFloatBlockToOklabFloatBlock(rgbaFloatBlocks[i], true); // ENABLE ACES TONEMAP
 
         float minDist = std::numeric_limits<float>::max();
         uint32_t bestIdx = 0;
         for (uint32_t j = 0; j < codebookSize; ++j) {
-            float dist = OklabBlockDistanceSq_SIMD(perceptualLabBlock, perceptualLabCentroids[j]);
+            float dist = OklabFloatBlockDistanceSq_SIMD(perceptualLabBlock, perceptualLabCentroids[j]);
             if (dist < minDist) {
                 minDist = dist;
                 bestIdx = j;
