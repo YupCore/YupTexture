@@ -1,5 +1,4 @@
 #pragma once
-// Holy shit I'm about to explode
 #include <vector>
 #include <cmath>
 #include <algorithm>
@@ -14,7 +13,7 @@ namespace Oklab
     inline void srgb_to_lms(const float* rgb, float* lms) {
         lms[0] = 0.4122214708f * rgb[0] + 0.5363325363f * rgb[1] + 0.0514459929f * rgb[2];
         lms[1] = 0.2119034982f * rgb[0] + 0.6806995451f * rgb[1] + 0.1073969566f * rgb[2];
-        lms[2] = 0.0883024619f * rgb[0] + 0.2817188376f * rgb[1] + 0.6300f * rgb[2]; // Simplified last element
+        lms[2] = 0.0883024619f * rgb[0] + 0.2817188376f * rgb[1] + 0.6299787005f * rgb[2]; // fixed
     }
 
     inline void lms_to_oklab(const float* lms, float* lab) {
@@ -41,10 +40,9 @@ namespace Oklab
 
     inline void lms_to_srgb(const float* lms, float* rgb) {
         rgb[0] = +4.0767416621f * lms[0] - 3.3077115913f * lms[1] + 0.2309699292f * lms[2];
-        rgb[1] = -1.2681437731f * lms[0] + 2.6093323231f * lms[1] - 0.3411894000f * lms[2];
-        rgb[2] = -0.0041960863f * lms[0] - 0.7034186147f * lms[1] + 1.7076147010f * lms[2];
+        rgb[1] = -1.2681437731f * lms[0] + 2.6093323231f * lms[1] - 0.3411344290f * lms[2];
+        rgb[2] = -0.0041119885f * lms[0] - 0.7034763098f * lms[1] + 1.7075952153f * lms[2];
     }
-
 
     // --- Block Conversions ---
 
@@ -54,22 +52,23 @@ namespace Oklab
         for (size_t i = 0; i < 16; ++i) {
             srgb_to_lms(&rgbaBlock[i * 4], lms);
             lms_to_oklab(lms, &labBlock[i * 4]);
-            labBlock[i * 4 + 3] = rgbaBlock[i * 4 + 3]; // Pass alpha through
+            labBlock[i * 4 + 3] = rgbaBlock[i * 4 + 3]; // Alpha passthrough
         }
         return labBlock;
     }
 
-    inline std::vector<float> OklabBlockToRgbaFloatBlock(const OklabBlock& labBlock) {
+    inline std::vector<float> OklabBlockToRgbaFloatBlock(const OklabBlock& labBlock, bool clampForLDR = false) {
         std::vector<float> rgbaBlock(16 * 4);
         float lms[3];
         for (size_t i = 0; i < 16; ++i) {
             oklab_to_lms(&labBlock[i * 4], lms);
             lms_to_srgb(lms, &rgbaBlock[i * 4]);
-            rgbaBlock[i * 4 + 3] = labBlock[i * 4 + 3]; // Pass alpha through
-            // Clamp to a reasonable range for BC6H, though it can handle negatives/positives
-            rgbaBlock[i * 4 + 0] = std::max(0.0f, rgbaBlock[i * 4 + 0]);
-            rgbaBlock[i * 4 + 1] = std::max(0.0f, rgbaBlock[i * 4 + 1]);
-            rgbaBlock[i * 4 + 2] = std::max(0.0f, rgbaBlock[i * 4 + 2]);
+            rgbaBlock[i * 4 + 3] = labBlock[i * 4 + 3];
+            if (clampForLDR) {
+                rgbaBlock[i * 4 + 0] = std::max(0.0f, rgbaBlock[i * 4 + 0]);
+                rgbaBlock[i * 4 + 1] = std::max(0.0f, rgbaBlock[i * 4 + 1]);
+                rgbaBlock[i * 4 + 2] = std::max(0.0f, rgbaBlock[i * 4 + 2]);
+            }
         }
         return rgbaBlock;
     }
