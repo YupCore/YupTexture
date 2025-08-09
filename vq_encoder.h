@@ -122,23 +122,23 @@ private:
 
     std::vector<uint8_t> CompressSingleBlock(const uint8_t* rgbaBlock, uint8_t channels, int numThreads, float quality, uint8_t alphaThreshold = 128);
 
-	// HDR oklab color space math
+    // HDR oklab color space math
 
-    // --- OPTIMIZATION: DISTANCE FUNCTION ---
-    // The distance function now operates on pre-transformed "perceptual" Oklab data.
-    // It is much faster as it no longer contains expensive math operations.
+    // --- MODIFIED: Added luminance weighting to the distance function ---
     float OklabFloatBlockDistanceSq_SIMD(const OklabFloatBlock& labA, const OklabFloatBlock& labB) const {
         __m256 sum_sq_diff = _mm256_setzero_ps();
 
-        // Weight for the difference. L-channel's squared difference will be weighted by 4.0.
-        // This is a tunable parameter for quality.
-        const __m256 weight = _mm256_set_ps(1.0f, 1.0f, 1.0f, 2.0f, 1.0f, 1.0f, 1.0f, 2.0f);
+        // Weight for the difference. L-channel is weighted more heavily.
+        // The layout is [a, b, L, A, a, b, L, A] for two pixels. We weight L.
+        const __m256 weight = _mm256_set_ps(1.0f, 2.0f, 1.0f, 1.0f, 1.0f, 2.0f, 1.0f, 1.0f);
 
+        // Process 16 pixels (64 floats) in 8-float chunks
         for (size_t i = 0; i < 64; i += 8) {
             __m256 a = _mm256_loadu_ps(&labA[i]);
             __m256 b = _mm256_loadu_ps(&labB[i]);
-
             __m256 diff = _mm256_sub_ps(a, b);
+
+            // Apply weight to the difference
             __m256 weighted_diff = _mm256_mul_ps(diff, weight);
 
             // Fused multiply-add for: sum_sq_diff += weighted_diff * weighted_diff
@@ -177,7 +177,6 @@ public:
         const CompressionParams& params
     );
 
-    // --- ADDED: Public API for HDR VQ ---
     VQCodebook BuildCodebookHDR(
         const std::vector<std::vector<float>>& rgbaFloatBlocks,
         std::vector<std::vector<float>>& outRgbaCentroids,
@@ -186,7 +185,7 @@ public:
 
     std::vector<uint32_t> QuantizeBlocksHDR(
         const std::vector<std::vector<float>>& rgbaFloatBlocks,
-        const std::vector<std::vector<float>>& rgbaCentroids, 
+        const std::vector<std::vector<float>>& rgbaCentroids,
         const CompressionParams& params
     );
 };
@@ -486,7 +485,7 @@ inline std::vector<uint8_t> VQEncoder::CompressSingleBlockHDR(const std::vector<
 }
 
 inline VQCodebook VQEncoder::BuildCodebookHDR(const std::vector<std::vector<float>>& allRgbaFloatBlocks, std::vector<std::vector<float>>& outRgbaCentroids, const CompressionParams& params) {
-    // 1. Sampling: Run expensive K-Means on a sample, not the entire dataset.
+    // 1. Sampling
     std::vector<const std::vector<float>*> sampledBlocksPtrs;
     if (config.fastModeSampleRatio < 1.0f && config.fastModeSampleRatio > 0.0f) {
         size_t numToSample = static_cast<size_t>(allRgbaFloatBlocks.size() * config.fastModeSampleRatio);
@@ -512,13 +511,12 @@ inline VQCodebook VQEncoder::BuildCodebookHDR(const std::vector<std::vector<floa
     size_t numBlocks = blocksToProcess.size();
     if (numBlocks == 0) return {};
 
-    // 2. Pre-transformation: Convert to perceptual Oklab *once*.
-    //    FIX: To handle HDR data correctly, we MUST apply a tonemapper (like ACES)
-    //    to bring the data into a perceptually-meaningful range before Oklab conversion.
+    // 2. Pre-transformation: Convert to perceptual Oklab *once*, applying ACES tonemapper.
     std::vector<OklabFloatBlock> perceptualOklabFloatBlocks(numBlocks);
 #pragma omp parallel for num_threads(params.numThreads)
     for (int64_t i = 0; i < numBlocks; ++i) {
-        perceptualOklabFloatBlocks[i] = Oklab::RgbaFloatBlockToOklabFloatBlock(*blocksToProcess[i], true); // ENABLE ACES TONEMAP
+        // --- MODIFIED: Enable ACES tonemapping for HDR->Oklab conversion ---
+        perceptualOklabFloatBlocks[i] = Oklab::RgbaFloatBlockToOklabFloatBlock(*blocksToProcess[i], /*applyACESTonemap=*/true);
     }
 
     // 3. K-Means++ Initialization (on pre-transformed perceptual data)
@@ -608,18 +606,15 @@ inline VQCodebook VQEncoder::BuildCodebookHDR(const std::vector<std::vector<floa
 #pragma omp parallel for num_threads(params.numThreads)
     for (int64_t i = 0; i < config.codebookSize; ++i) {
         OklabFloatBlock finalOklabCentroid = perceptualOklabCentroids[i];
-        // FIX: Convert back to RGBA by applying the INVERSE tonemapper. This is critical
-        // to restore the original high dynamic range from the perceptual Oklab space.
-        // OklabFloatBlockToRgbaFloatBlock(block, clampForLDR, applyACESInverse)
-        outRgbaCentroids[i] = Oklab::OklabFloatBlockToRgbaFloatBlock(finalOklabCentroid, false, true); // ENABLE ACES INVERSE
+        // --- MODIFIED: Apply INVERSE ACES tonemapper to restore HDR values ---
+        outRgbaCentroids[i] = Oklab::OklabFloatBlockToRgbaFloatBlock(finalOklabCentroid, /*clampForLDR=*/false, /*applyACESInverse=*/true);
     }
 
     VQCodebook finalCodebook(BCBlockSize::GetSize(bcFormat), config.codebookSize);
     finalCodebook.entries.resize(config.codebookSize);
 #pragma omp parallel for num_threads(params.numThreads)
     for (int64_t i = 0; i < config.codebookSize; ++i) {
-        // QUALITY IMPROVEMENT: Compress the codebook entries themselves with max quality.
-        // This has a negligible impact on final size but ensures the VQ building blocks are as accurate as possible.
+        // --- MODIFIED: Compress codebook entries with max quality for best results ---
         finalCodebook.entries[i] = CompressSingleBlockHDR(outRgbaCentroids[i], params.numThreads, 1.0f);
     }
     return finalCodebook;
@@ -631,19 +626,19 @@ inline std::vector<uint32_t> VQEncoder::QuantizeBlocksHDR(const std::vector<std:
     std::vector<uint32_t> indices(numBlocks);
     uint32_t codebookSize = static_cast<uint32_t>(rgbaCentroids.size());
 
-    // 1. Convert all final centroids to perceptual Oklab space once.
-    //    FIX: Must apply the same ACES tonemapper used during codebook creation.
+    // 1. Convert all final centroids to perceptual Oklab space once, with ACES tonemapping.
     std::vector<OklabFloatBlock> perceptualLabCentroids(codebookSize);
 #pragma omp parallel for num_threads(params.numThreads)
     for (int64_t i = 0; i < codebookSize; ++i) {
-        perceptualLabCentroids[i] = Oklab::RgbaFloatBlockToOklabFloatBlock(rgbaCentroids[i], true); // ENABLE ACES TONEMAP
+        // --- MODIFIED: Enable ACES tonemapping for centroid conversion ---
+        perceptualLabCentroids[i] = Oklab::RgbaFloatBlockToOklabFloatBlock(rgbaCentroids[i], /*applyACESTonemap=*/true);
     }
 
     // 2. Find best index for each block, converting to perceptual space as we go.
 #pragma omp parallel for num_threads(params.numThreads)
     for (int64_t i = 0; i < numBlocks; ++i) {
-        // FIX: Must apply the ACES tonemapper to incoming blocks to match the centroid space.
-        OklabFloatBlock perceptualLabBlock = Oklab::RgbaFloatBlockToOklabFloatBlock(rgbaFloatBlocks[i], true); // ENABLE ACES TONEMAP
+        // --- MODIFIED: Enable ACES tonemapping for incoming blocks to match centroid space ---
+        OklabFloatBlock perceptualLabBlock = Oklab::RgbaFloatBlockToOklabFloatBlock(rgbaFloatBlocks[i], /*applyACESTonemap=*/true);
 
         float minDist = std::numeric_limits<float>::max();
         uint32_t bestIdx = 0;
