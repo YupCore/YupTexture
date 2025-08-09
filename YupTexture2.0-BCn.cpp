@@ -297,10 +297,10 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
         outputImage.isHDR = image.isHDR;
 
         if (image.isHDR) {
-            outputImage.data = compressor.DecompressToRGBAF(loadedTexture, true);
+            outputImage.data = compressor.DecompressToRGBAF(loadedTexture);
         }
         else {
-            outputImage.data = compressor.DecompressToRGBA(loadedTexture, true);
+            outputImage.data = compressor.DecompressToRGBA(loadedTexture);
             auto end_decompress = std::chrono::high_resolution_clock::now();
             std::cout << "Decompression to RGBA finished in " << std::fixed << std::setprecision(4)
                 << std::chrono::duration<double>(end_decompress - start_decompress).count() << "s.\n";
