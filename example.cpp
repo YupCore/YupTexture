@@ -297,7 +297,8 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
             if (params.bcFormat == BCFormat::BC5) {
                 std::cout << "Reconstructing Z-channel for BC5 normal map visualization...\n";
                 auto& decompressed_data = std::get<std::vector<uint8_t>>(outputImage.data);
-                for (size_t i = 0; i < decompressed_data.size(); i += 4) {
+#pragma omp parallel for
+                for (int64_t i = 0; i < decompressed_data.size(); i += 4) {
                     float x = (decompressed_data[i + 0] / 255.0f) * 2.0f - 1.0f;
                     float y = (decompressed_data[i + 1] / 255.0f) * 2.0f - 1.0f;
                     float z_squared = 1.0f - x * x - y * y;
