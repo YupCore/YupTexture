@@ -163,10 +163,6 @@ CompressedTexture VQBCnCompressor::Compress(const uint8_t* rgbaData, uint32_t wi
 
 CompressedTexture VQBCnCompressor::CompressHDR(const float* rgbaData, uint32_t width, uint32_t height, const CompressionParams& params)
 {
-    if (params.bcFormat != BCFormat::BC6H) {
-        throw std::runtime_error("HDR compression only supports BC6H format.");
-    }
-
     // --- Handle VQ Bypass ---
     if (!params.useVQ) {
         CompressedTexture result;

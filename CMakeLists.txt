@@ -6,7 +6,13 @@ project(YupTexture)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# Find required packages via vcpkg.
+# Add option for building example
+option(BUILD_EXAMPLE "Build the example executable" ON)
+
+# Find OpenMP
+find_package(OpenMP REQUIRED)
+
+# Find required packages via vcpkg
 find_package(zstd CONFIG REQUIRED)
 
 # Compressonator libraries
@@ -14,7 +20,7 @@ set(COMPRESSONATOR_ROOT "${CMAKE_SOURCE_DIR}/thirdparty/Compressonator")
 set(COMPRESSONATOR_INCLUDE_DIR "${COMPRESSONATOR_ROOT}/${PLATFORM_DIR}/include")
 set(COMPRESSONATOR_LIB_DIR "${COMPRESSONATOR_ROOT}/${PLATFORM_DIR}/lib/x64")
 
-# Check if Compressonator exist
+# Check if Compressonator exists
 if(NOT EXISTS ${COMPRESSONATOR_ROOT})
     message(FATAL_ERROR "Compressonator include directory not found: ${COMPRESSONATOR_ROOT}")
 endif()
@@ -70,11 +76,17 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${COMPRESSONATOR_INCLUDE_DIR}
 )
 
-# Link libraries
+# Link libraries, including OpenMP
 target_link_libraries(${PROJECT_NAME} PRIVATE
     ${COMPRESSONATOR_LIBRARIES}
-	zstd::libzstd
+    zstd::libzstd
+    OpenMP::OpenMP_CXX
 )
+
+# Add OpenMP compile options
+if(OpenMP_CXX_FOUND)
+    target_compile_options(${PROJECT_NAME} PRIVATE ${OpenMP_CXX_FLAGS})
+endif()
 
 target_compile_definitions(${PROJECT_NAME} PRIVATE YUPTEXTURE_EXPORT)
 
@@ -86,19 +98,19 @@ if(WIN32)
     )
 
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-	    # Copy Compressonator DLLs to output directory
-		add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-			COMMAND ${CMAKE_COMMAND} -E copy_if_different
-			"${COMPRESSONATOR_LIB_DIR}/Compressonator_MDd_DLL.dll"
-			"$<TARGET_FILE_DIR:${PROJECT_NAME}>"
-		)
+        # Copy Compressonator DLLs to output directory
+        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${COMPRESSONATOR_LIB_DIR}/Compressonator_MDd_DLL.dll"
+            "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+        )
     elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
-	    # Copy Compressonator DLLs to output directory
-		add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-			COMMAND ${CMAKE_COMMAND} -E copy_if_different
-			"${COMPRESSONATOR_LIB_DIR}/Compressonator_MD_DLL.dll"
-			"$<TARGET_FILE_DIR:${PROJECT_NAME}>"
-		)
+        # Copy Compressonator DLLs to output directory
+        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${COMPRESSONATOR_LIB_DIR}/Compressonator_MD_DLL.dll"
+            "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+        )
     endif()
 endif()
 
@@ -114,3 +126,62 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
     $<$<CONFIG:Debug>:DEBUG>
     $<$<CONFIG:Release>:NDEBUG>
 )
+
+# Build example executable if enabled
+if(BUILD_EXAMPLE)
+    # Add example executable
+    add_executable(YupTextureExample example.cpp)
+
+    # Find required packages via vcpkg
+    find_package(Stb REQUIRED)
+    
+    # Include directories for example
+    target_include_directories(YupTextureExample PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${COMPRESSONATOR_INCLUDE_DIR}
+        ${Stb_INCLUDE_DIR}
+    )
+    
+    # Link libraries for example, including OpenMP
+    target_link_libraries(YupTextureExample PRIVATE
+        ${PROJECT_NAME}
+        ${COMPRESSONATOR_LIBRARIES}
+        zstd::libzstd
+        OpenMP::OpenMP_CXX
+    )
+    
+    # Add OpenMP compile options for example
+    if(OpenMP_CXX_FOUND)
+        target_compile_options(YupTextureExample PRIVATE ${OpenMP_CXX_FLAGS})
+    endif()
+    
+    # Copy Compressonator DLLs to example output directory
+    if(WIN32)
+        if(CMAKE_BUILD_TYPE STREQUAL "Debug")
+            add_custom_command(TARGET YupTextureExample POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${COMPRESSONATOR_LIB_DIR}/Compressonator_MDd_DLL.dll"
+                "$<TARGET_FILE_DIR:YupTextureExample>"
+            )
+        elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
+            add_custom_command(TARGET YupTextureExample POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${COMPRESSONATOR_LIB_DIR}/Compressonator_MD_DLL.dll"
+                "$<TARGET_FILE_DIR:YupTextureExample>"
+            )
+        endif()
+    endif()
+    
+    # Apply same compiler warnings as main library
+    if(MSVC)
+        target_compile_options(YupTextureExample PRIVATE /W4)
+    else()
+        target_compile_options(YupTextureExample PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+    
+    # Apply same debug/release definitions
+    target_compile_definitions(YupTextureExample PRIVATE
+        $<$<CONFIG:Debug>:DEBUG>
+        $<$<CONFIG:Release>:NDEBUG>
+    )
+endif()
