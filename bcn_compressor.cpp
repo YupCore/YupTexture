@@ -1,0 +1,163 @@
+#include "bcn_compressor.h"
+#include <Compressonator.h>
+
+int32_t BCnCompressor::GetCMPFormat(BCFormat format)
+{
+    switch (format) {
+    case BCFormat::BC1: return CMP_FORMAT_BC1;
+    case BCFormat::BC2: return CMP_FORMAT_BC2;
+    case BCFormat::BC3: return CMP_FORMAT_BC3;
+    case BCFormat::BC4: return CMP_FORMAT_BC4;
+    case BCFormat::BC5: return CMP_FORMAT_BC5;
+    case BCFormat::BC6H: return CMP_FORMAT_BC6H;
+    case BCFormat::BC7: return CMP_FORMAT_BC7;
+    default: return CMP_FORMAT_BC1;
+    }
+}
+
+std::vector<uint8_t> BCnCompressor::CompressRGBA(const uint8_t* rgbaData, uint32_t width, uint32_t height, uint8_t channels, BCFormat format, int numThreads, float quality, uint8_t alphaThreshold)
+{
+    CMP_Texture srcTexture = {};
+    srcTexture.dwSize = sizeof(CMP_Texture);
+    srcTexture.dwWidth = width;
+    srcTexture.dwHeight = height;
+    srcTexture.dwPitch = width * 4;
+    srcTexture.format = CMP_FORMAT_RGBA_8888;
+    srcTexture.dwDataSize = width * height * 4;
+    srcTexture.pData = const_cast<uint8_t*>(rgbaData);
+
+    CMP_Texture destTexture = {};
+    destTexture.dwSize = sizeof(CMP_Texture);
+    destTexture.dwWidth = width;
+    destTexture.dwHeight = height;
+    destTexture.format = static_cast<CMP_FORMAT>(GetCMPFormat(format));
+
+    size_t blockSize = BCBlockSize::GetSize(format);
+    size_t blocksX = (width + 3) / 4;
+    size_t blocksY = (height + 3) / 4;
+    size_t compressedSize = blocksX * blocksY * blockSize;
+
+    std::vector<uint8_t> compressedData(compressedSize);
+    destTexture.dwDataSize = compressedSize;
+    destTexture.pData = compressedData.data();
+
+    CMP_CompressOptions options = {};
+    options.dwSize = sizeof(options);
+    options.fquality = quality;
+    options.dwnumThreads = numThreads;
+
+    if (format == BCFormat::BC1 && channels == 4) {
+        options.bDXT1UseAlpha = true;
+        options.nAlphaThreshold = alphaThreshold;
+    }
+
+    CMP_ERROR error = CMP_ConvertTexture(&srcTexture, &destTexture, &options, nullptr);
+    if (error != CMP_OK) {
+        return {};
+    }
+
+    return compressedData;
+}
+
+std::vector<uint8_t> BCnCompressor::CompressHDR(const float* rgbaData, uint32_t width, uint32_t height, BCFormat format, int numThreads, float quality)
+{
+    CMP_Texture srcTexture = {};
+    srcTexture.dwSize = sizeof(CMP_Texture);
+    srcTexture.dwWidth = width;
+    srcTexture.dwHeight = height;
+    srcTexture.dwPitch = width * 4 * sizeof(float);
+    srcTexture.format = CMP_FORMAT_RGBA_32F; // Source is float
+    srcTexture.dwDataSize = width * height * 4 * sizeof(float);
+    srcTexture.pData = (CMP_BYTE*)rgbaData;
+
+    CMP_Texture destTexture = {};
+    destTexture.dwSize = sizeof(CMP_Texture);
+    destTexture.dwWidth = width;
+    destTexture.dwHeight = height;
+    destTexture.format = static_cast<CMP_FORMAT>(GetCMPFormat(format)); // Should be BC6H
+
+    size_t blockSize = BCBlockSize::GetSize(format);
+    size_t blocksX = (width + 3) / 4;
+    size_t blocksY = (height + 3) / 4;
+    size_t compressedSize = blocksX * blocksY * blockSize;
+
+    std::vector<uint8_t> compressedData(compressedSize);
+    destTexture.dwDataSize = compressedSize;
+    destTexture.pData = compressedData.data();
+
+    CMP_CompressOptions options = {};
+    options.dwSize = sizeof(options);
+    options.fquality = quality;
+    options.dwnumThreads = numThreads;
+
+    CMP_ERROR error = CMP_ConvertTexture(&srcTexture, &destTexture, &options, nullptr);
+    if (error != CMP_OK) {
+        return {};
+    }
+
+    return compressedData;
+}
+
+std::vector<uint8_t> BCnCompressor::DecompressToRGBA(const uint8_t* bcData, uint32_t width, uint32_t height, BCFormat format)
+{
+    CMP_Texture srcTexture = {};
+    srcTexture.dwSize = sizeof(CMP_Texture);
+    srcTexture.dwWidth = width;
+    srcTexture.dwHeight = height;
+    srcTexture.format = static_cast<CMP_FORMAT>(GetCMPFormat(format));
+
+    size_t blockSize = BCBlockSize::GetSize(format);
+    size_t blocksX = (width + 3) / 4;
+    size_t blocksY = (height + 3) / 4;
+    srcTexture.dwDataSize = blocksX * blocksY * blockSize;
+    srcTexture.pData = const_cast<uint8_t*>(bcData);
+
+    CMP_Texture destTexture = {};
+    destTexture.dwSize = sizeof(CMP_Texture);
+    destTexture.dwWidth = width;
+    destTexture.dwHeight = height;
+    destTexture.format = CMP_FORMAT_RGBA_8888;
+
+    std::vector<uint8_t> rgbaData(width * height * 4);
+    destTexture.dwDataSize = rgbaData.size();
+    destTexture.pData = rgbaData.data();
+
+    CMP_ERROR error = CMP_ConvertTexture(&srcTexture, &destTexture, nullptr, nullptr);
+    if (error != CMP_OK) {
+        return {};
+    }
+
+    return rgbaData;
+}
+
+std::vector<float> BCnCompressor::DecompressToRGBAF(const uint8_t* bcData, uint32_t width, uint32_t height, BCFormat format)
+{
+    CMP_Texture srcTexture = {};
+    srcTexture.dwSize = sizeof(CMP_Texture);
+    srcTexture.dwWidth = width;
+    srcTexture.dwHeight = height;
+    srcTexture.format = static_cast<CMP_FORMAT>(GetCMPFormat(format));
+
+    size_t blockSize = BCBlockSize::GetSize(format);
+    size_t blocksX = (width + 3) / 4;
+    size_t blocksY = (height + 3) / 4;
+    srcTexture.dwDataSize = blocksX * blocksY * blockSize;
+    srcTexture.pData = const_cast<uint8_t*>(bcData);
+
+    CMP_Texture destTexture = {};
+    destTexture.dwSize = sizeof(CMP_Texture);
+    destTexture.dwWidth = width;
+    destTexture.dwHeight = height;
+    destTexture.format = CMP_FORMAT_RGBA_32F;
+
+    std::vector<float> rgbaData(width * height * 4);
+    destTexture.dwDataSize = rgbaData.size() * sizeof(float);
+    destTexture.pData = (CMP_BYTE*)rgbaData.data();
+
+    CMP_ERROR error = CMP_ConvertTexture(&srcTexture, &destTexture, nullptr, nullptr);
+    if (error != CMP_OK) {
+        return {};
+    }
+
+    return rgbaData;
+}

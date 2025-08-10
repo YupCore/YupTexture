@@ -5,7 +5,14 @@
 #include <memory>
 #include <array>
 
+#ifdef YUPTEXTURE_EXPORT
+#define YUPTEXTURE_API __declspec(dllexport)
+#else
+#define YUPTEXTURE_API __declspec(dllimport)
+#endif
+
 enum class BCFormat {
+    Unknown = 0,
     BC1 = 1,
     BC2,
     BC3,
@@ -38,7 +45,7 @@ struct BCBlockSize {
     }
 };
 
-// --- MODIFIED: Added IS_HDR flag ---
+// --- Added IS_HDR flag ---
 // Flags to indicate which compression steps were used.
 enum CompressionFlags : uint32_t {
     COMPRESSION_FLAGS_DEFAULT = 0,
