@@ -263,25 +263,13 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
             std::cout << "Compression finished in " << std::fixed << std::setprecision(2)
                 << std::chrono::duration<double>(end_compress - start_compress).count() << "s.\n";
 
-            std::ofstream outFile(out_name_bin, std::ios::binary);
-            outFile.write(reinterpret_cast<const char*>(&compressed.info), sizeof(TextureInfo));
-            outFile.write(reinterpret_cast<const char*>(compressed.compressedData.data()), compressed.compressedData.size());
-            outFile.close();
+            compressed.Save(out_name_bin);
             std::cout << "Saved compressed file: " << out_name_bin << std::endl;
         }
 
         // --- Decompression and Verification ---
-
-        std::ifstream inFile(out_name_bin, std::ios::binary);
-        if (!inFile) throw std::runtime_error("Failed to open " + out_name_bin + " for reading.");
         CompressedTexture loadedTexture;
-        inFile.read(reinterpret_cast<char*>(&loadedTexture.info), sizeof(TextureInfo));
-        inFile.seekg(0, std::ios::end);
-        size_t fileDataSize = static_cast<size_t>(inFile.tellg()) - sizeof(TextureInfo);
-        loadedTexture.compressedData.resize(fileDataSize);
-        inFile.seekg(sizeof(TextureInfo), std::ios::beg);
-        inFile.read(reinterpret_cast<char*>(loadedTexture.compressedData.data()), fileDataSize);
-        inFile.close();
+        loadedTexture.Load(out_name_bin);
 
         auto start_decompress_bcn = std::chrono::high_resolution_clock::now();
         auto bcData = compressor.DecompressToBCn(loadedTexture);
