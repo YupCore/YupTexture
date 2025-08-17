@@ -24,7 +24,7 @@ private:
 
     std::unique_ptr<ZstdContext> zstdCtx;
 
-    // --- ADDED: Dictionary pointers ---
+    // --- Dictionary pointers ---
     void* cdict = nullptr;
     void* ddict = nullptr;
 
@@ -34,10 +34,10 @@ private:
 public:
     VQBCnCompressor();
 
-    // --- ADDED: Destructor to free dictionaries ---
+    // --- Destructor to free dictionaries ---
     ~VQBCnCompressor();
 
-    // --- ADDED: Method to load a pre-trained dictionary ---
+    // --- Method to load a pre-trained dictionary ---
     void LoadDictionary(const uint8_t* dictData, size_t dictSize);
 
     // Main compression function for LDR textures

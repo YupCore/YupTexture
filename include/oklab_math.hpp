@@ -867,7 +867,7 @@ namespace Oklab {
         const int num_channels = rgba ? 4 : 3;
         if (srgbBlock.size() != 16 * num_channels) return OklabFloatBlock();
 
-        // 1. Convert 8-bit sRGB to linear float
+        // Convert 8-bit sRGB to linear float
         std::vector<float> linearFloatBlock;
         linearFloatBlock.resize(srgbBlock.size());
 
@@ -884,7 +884,7 @@ namespace Oklab {
             }
         }
 
-        // 2. Use the existing pipeline with the converted linear float data
+        // Use the existing pipeline with the converted linear float data
         return FloatBlockToOklabFloatBlock(linearFloatBlock, rgba, applyACESTonemap);
     }
 

@@ -154,7 +154,7 @@ void VQEncoder::SetFormat(BCFormat format)
 }
 
 VQCodebook VQEncoder::BuildCodebook(const std::vector<std::vector<uint8_t>>& allRgbaBlocks, uint8_t channels, std::vector<std::vector<uint8_t>>& outRgbaCentroids, const CompressionParams& params) {
-    // 1. Sampling
+    // Sampling
     std::vector<const std::vector<uint8_t>*> sampledBlocksPtrs;
     if (config.fastModeSampleRatio < 1.0f && config.fastModeSampleRatio > 0.0f) {
         size_t numToSample = static_cast<size_t>(allRgbaBlocks.size() * config.fastModeSampleRatio);
@@ -178,7 +178,7 @@ VQCodebook VQEncoder::BuildCodebook(const std::vector<std::vector<uint8_t>>& all
     const auto& blocksToProcess = sampledBlocksPtrs;
     size_t numBlocks = blocksToProcess.size();
 
-    // 2. K-Means++ Initialization (always in RGB space for speed)
+    // K-Means++ Initialization (always in RGB space for speed)
     std::vector<std::vector<uint8_t>> rgbaCentroids(config.codebookSize);
     std::vector<float> minDistSq(numBlocks, std::numeric_limits<float>::max());
     std::uniform_int_distribution<size_t> distrib(0, numBlocks - 1);
@@ -207,7 +207,7 @@ VQCodebook VQEncoder::BuildCodebook(const std::vector<std::vector<uint8_t>>& all
         }
     }
 
-    // 3. K-Means Iterations
+    // K-Means Iterations
     std::vector<uint32_t> assignments(numBlocks, 0);
     std::vector<float> errors(numBlocks);
 
@@ -323,7 +323,7 @@ VQCodebook VQEncoder::BuildCodebook(const std::vector<std::vector<uint8_t>>& all
         }
     }
 
-    // 4. Finalize Codebook
+    // Finalize Codebook
     outRgbaCentroids = rgbaCentroids;
     VQCodebook finalCodebook(BCBlockSize::GetSize(bcFormat), config.codebookSize);
     finalCodebook.entries.resize(config.codebookSize);
@@ -385,7 +385,7 @@ std::vector<uint8_t> VQEncoder::CompressSingleBlockHDR(const std::vector<float>&
 }
 
 VQCodebook VQEncoder::BuildCodebookHDR(const std::vector<std::vector<float>>& allRgbaFloatBlocks, std::vector<std::vector<float>>& outRgbaCentroids, const CompressionParams& params) {
-    // 1. Sampling
+    // Sampling
     std::vector<const std::vector<float>*> sampledBlocksPtrs;
     if (config.fastModeSampleRatio < 1.0f && config.fastModeSampleRatio > 0.0f) {
         size_t numToSample = static_cast<size_t>(allRgbaFloatBlocks.size() * config.fastModeSampleRatio);
@@ -411,7 +411,7 @@ VQCodebook VQEncoder::BuildCodebookHDR(const std::vector<std::vector<float>>& al
     size_t numBlocks = blocksToProcess.size();
     if (numBlocks == 0) return {};
 
-    // 2. Pre-transformation: Convert to perceptual Oklab *once*, applying ACES tonemapper.
+    // Pre-transformation: Convert to perceptual Oklab *once*, applying ACES tonemapper.
     std::vector<OklabFloatBlock> perceptualOklabFloatBlocks(numBlocks);
 #pragma omp parallel for num_threads(params.numThreads)
     for (int64_t i = 0; i < numBlocks; ++i) {
@@ -419,7 +419,7 @@ VQCodebook VQEncoder::BuildCodebookHDR(const std::vector<std::vector<float>>& al
         perceptualOklabFloatBlocks[i] = Oklab::RgbaFloatBlockToOklabFloatBlock(*blocksToProcess[i], /*applyACESTonemap=*/true);
     }
 
-    // 3. K-Means++ Initialization (on pre-transformed perceptual data)
+    // K-Means++ Initialization (on pre-transformed perceptual data)
     std::vector<OklabFloatBlock> perceptualOklabCentroids(config.codebookSize);
     std::vector<float> minDistSq(numBlocks, std::numeric_limits<float>::max());
     std::uniform_int_distribution<size_t> distrib(0, numBlocks - 1);
@@ -449,7 +449,7 @@ VQCodebook VQEncoder::BuildCodebookHDR(const std::vector<std::vector<float>>& al
         }
     }
 
-    // 4. K-Means Iterations
+    // K-Means Iterations
     std::vector<uint32_t> assignments(numBlocks, 0);
     std::vector<float> errors(numBlocks);
     for (uint32_t iter = 0; iter < config.maxIterations; ++iter) {
@@ -501,7 +501,7 @@ VQCodebook VQEncoder::BuildCodebookHDR(const std::vector<std::vector<float>>& al
         }
     }
 
-    // 5. Finalize Codebook
+    // Finalize Codebook
     outRgbaCentroids.resize(config.codebookSize);
 #pragma omp parallel for num_threads(params.numThreads)
     for (int64_t i = 0; i < config.codebookSize; ++i) {
@@ -526,7 +526,7 @@ std::vector<uint32_t> VQEncoder::QuantizeBlocksHDR(const std::vector<std::vector
     std::vector<uint32_t> indices(numBlocks);
     uint32_t codebookSize = static_cast<uint32_t>(rgbaCentroids.size());
 
-    // 1. Convert all final centroids to perceptual Oklab space once, with ACES tonemapping.
+    // Convert all final centroids to perceptual Oklab space once, with ACES tonemapping.
     std::vector<OklabFloatBlock> perceptualLabCentroids(codebookSize);
 #pragma omp parallel for num_threads(params.numThreads)
     for (int64_t i = 0; i < codebookSize; ++i) {
@@ -534,7 +534,7 @@ std::vector<uint32_t> VQEncoder::QuantizeBlocksHDR(const std::vector<std::vector
         perceptualLabCentroids[i] = Oklab::RgbaFloatBlockToOklabFloatBlock(rgbaCentroids[i], /*applyACESTonemap=*/true);
     }
 
-    // 2. Find best index for each block, converting to perceptual space as we go.
+    // Find best index for each block, converting to perceptual space as we go.
 #pragma omp parallel for num_threads(params.numThreads)
     for (int64_t i = 0; i < numBlocks; ++i) {
         // --- Enable ACES tonemapping for incoming blocks to match centroid space ---

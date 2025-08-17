@@ -33,11 +33,11 @@ endif()
 if(WIN32)
     if(CMAKE_BUILD_TYPE STREQUAL "Debug")
         set(COMPRESSONATOR_LIBRARIES
-            "${COMPRESSONATOR_LIB_DIR}/Compressonator_MDd_DLL.lib"
+            "${COMPRESSONATOR_LIB_DIR}/Compressonator_MDd.lib"
         )
     elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
         set(COMPRESSONATOR_LIBRARIES
-            "${COMPRESSONATOR_LIB_DIR}/Compressonator_MD_DLL.lib"
+            "${COMPRESSONATOR_LIB_DIR}/Compressonator_MD.lib"
         )
     endif()
 else()
@@ -60,11 +60,11 @@ set(SOURCE_FILES
 
 # Add the header files to the project
 set(HEADER_FILES
-    vq_bcn_types.h
-    bcn_compressor.h
-    vq_bcn_compressor.h
-    vq_encoder.h
-    oklab_math.hpp
+    include/vq_bcn_types.h
+    include/bcn_compressor.h
+    include/vq_bcn_compressor.h
+    include/vq_encoder.h
+    include/oklab_math.hpp
 )
 
 # Create the shared library (DLL)
@@ -72,6 +72,7 @@ add_library(${PROJECT_NAME} SHARED ${HEADER_FILES} ${SOURCE_FILES})
 
 # Include directories
 target_include_directories(${PROJECT_NAME} PRIVATE
+    include
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${COMPRESSONATOR_INCLUDE_DIR}
 )
@@ -96,22 +97,6 @@ if(WIN32)
         WIN32_LEAN_AND_MEAN
         NOMINMAX
     )
-
-    if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-        # Copy Compressonator DLLs to output directory
-        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${COMPRESSONATOR_LIB_DIR}/Compressonator_MDd_DLL.dll"
-            "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
-        )
-    elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
-        # Copy Compressonator DLLs to output directory
-        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${COMPRESSONATOR_LIB_DIR}/Compressonator_MD_DLL.dll"
-            "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
-        )
-    endif()
 endif()
 
 # Compiler warnings
@@ -137,6 +122,7 @@ if(BUILD_EXAMPLE)
     
     # Include directories for example
     target_include_directories(YupTextureExample PRIVATE
+        include
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${COMPRESSONATOR_INCLUDE_DIR}
         ${Stb_INCLUDE_DIR}
@@ -153,23 +139,6 @@ if(BUILD_EXAMPLE)
     # Add OpenMP compile options for example
     if(OpenMP_CXX_FOUND)
         target_compile_options(YupTextureExample PRIVATE ${OpenMP_CXX_FLAGS})
-    endif()
-    
-    # Copy Compressonator DLLs to example output directory
-    if(WIN32)
-        if(CMAKE_BUILD_TYPE STREQUAL "Debug")
-            add_custom_command(TARGET YupTextureExample POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${COMPRESSONATOR_LIB_DIR}/Compressonator_MDd_DLL.dll"
-                "$<TARGET_FILE_DIR:YupTextureExample>"
-            )
-        elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
-            add_custom_command(TARGET YupTextureExample POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${COMPRESSONATOR_LIB_DIR}/Compressonator_MD_DLL.dll"
-                "$<TARGET_FILE_DIR:YupTextureExample>"
-            )
-        endif()
     endif()
     
     # Apply same compiler warnings as main library

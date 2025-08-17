@@ -24,11 +24,11 @@ std::vector<uint8_t> VQBCnCompressor::compressWithZstd(const std::vector<uint8_t
 
     ZSTD_CCtx_setParameter((ZSTD_CCtx*)zstdCtx->cctx, ZSTD_c_nbWorkers, numThreads);
     ZSTD_CCtx_setParameter((ZSTD_CCtx*)zstdCtx->cctx, ZSTD_c_compressionLevel, level);
-    // --- ADDED: Enable/disable Long-Distance Matching ---
+    // --- Enable/disable Long-Distance Matching ---
     ZSTD_CCtx_setParameter((ZSTD_CCtx*)zstdCtx->cctx, ZSTD_c_enableLongDistanceMatching, enableLdm ? 1 : 0);
 
     size_t compressedSize;
-    // --- ADDED: Use dictionary if available ---
+    // --- Use dictionary if available ---
     if (cdict) {
         compressedSize = ZSTD_compress_usingCDict(
             (ZSTD_CCtx*)zstdCtx->cctx,
@@ -85,7 +85,7 @@ CompressedTexture VQBCnCompressor::Compress(const uint8_t* rgbaData, uint32_t wi
     result.info.format = params.bcFormat;
     result.info.compressionFlags = COMPRESSION_FLAGS_DEFAULT;
 
-    // --- ADDED: Check for large texture to enable LDM ---
+    // --- Check for large texture to enable LDM ---
     bool enableLdm = (width >= 4000 || height >= 4000);
 
     auto bcData = bcnCompressor.CompressRGBA(
@@ -205,7 +205,7 @@ CompressedTexture VQBCnCompressor::CompressHDR(const float* rgbaData, uint32_t w
     VQEncoder vqEncoder(vqConfig);
     vqEncoder.SetFormat(params.bcFormat);
 
-    // 1. Chunk input float data into 4x4 blocks
+    // Chunk input float data into 4x4 blocks
     const size_t numBlocksX = (width + 3) / 4;
     const size_t numBlocksY = (height + 3) / 4;
     const size_t numBlocks = numBlocksX * numBlocksY;
@@ -253,7 +253,7 @@ CompressedTexture VQBCnCompressor::CompressHDR(const float* rgbaData, uint32_t w
     result.codebook.entries.clear();
     result.indices.clear();
 
-    // 4. Compress final payload with Zstd
+    // Compress final payload with Zstd
     if (!params.useZstd) {
         result.info.compressionFlags |= COMPRESSION_FLAGS_ZSTD_BYPASSED;
         result.compressedData = std::move(payloadData);
