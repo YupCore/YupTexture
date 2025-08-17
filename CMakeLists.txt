@@ -15,9 +15,20 @@ find_package(OpenMP REQUIRED)
 # Find required packages via vcpkg
 find_package(zstd CONFIG REQUIRED)
 
+# Platform detection
+if(WIN32)
+    set(PLATFORM_DIR "windows")
+    set(ARCH_DIR "x64")
+elseif(UNIX AND NOT APPLE)
+    set(PLATFORM_DIR "linux")
+    set(ARCH_DIR "x86_64")
+else()
+    message(FATAL_ERROR "Unsupported platform")
+endif()
+
 # Compressonator libraries
 set(COMPRESSONATOR_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/Compressonator")
-set(COMPRESSONATOR_INCLUDE_DIR "${COMPRESSONATOR_ROOT}/${PLATFORM_DIR}/include")
+set(COMPRESSONATOR_INCLUDE_DIR "${COMPRESSONATOR_ROOT}/include")
 set(COMPRESSONATOR_LIB_DIR "${COMPRESSONATOR_ROOT}/${PLATFORM_DIR}/lib/x64")
 
 # Check if Compressonator exists
@@ -41,7 +52,14 @@ if(WIN32)
         )
     endif()
 else()
-    message(FATAL_ERROR "Only WIN32 is currently supported")
+    set(COMPRESSONATOR_LIBRARIES
+        "${COMPRESSONATOR_LIB_DIR}/libCMP_Common.a"
+        "${COMPRESSONATOR_LIB_DIR}/libCMP_Compressonator.a"
+        "${COMPRESSONATOR_LIB_DIR}/libCMP_Core.a"
+        "${COMPRESSONATOR_LIB_DIR}/libCMP_Core_AVX.a"
+        "${COMPRESSONATOR_LIB_DIR}/libCMP_Core_AVX512.a"
+        "${COMPRESSONATOR_LIB_DIR}/libCMP_Core_SSE.a"
+    )
 endif()
 
 # Verify Compressonator libraries exist
@@ -77,12 +95,26 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${COMPRESSONATOR_INCLUDE_DIR}
 )
 
-# Link libraries, including OpenMP
-target_link_libraries(${PROJECT_NAME} PRIVATE
-    ${COMPRESSONATOR_LIBRARIES}
-    zstd::libzstd
-    OpenMP::OpenMP_CXX
-)
+if(UNIX AND NOT APPLE) # I fucking hate linux
+    find_package(Threads REQUIRED)
+    find_package(TBB REQUIRED)
+
+    # Link libraries, including OpenMP
+    target_link_libraries(${PROJECT_NAME} PRIVATE
+        ${COMPRESSONATOR_LIBRARIES}
+        zstd::libzstd
+        OpenMP::OpenMP_CXX
+        Threads::Threads
+        TBB::tbb
+    )
+else()
+    # Link libraries, including OpenMP
+    target_link_libraries(${PROJECT_NAME} PRIVATE
+        ${COMPRESSONATOR_LIBRARIES}
+        zstd::libzstd
+        OpenMP::OpenMP_CXX
+    )
+endif()
 
 # Add OpenMP compile options
 if(OpenMP_CXX_FOUND)
@@ -97,6 +129,8 @@ if(WIN32)
         WIN32_LEAN_AND_MEAN
         NOMINMAX
     )
+elseif(UNIX AND NOT APPLE)
+      target_compile_options(YupTexture PRIVATE -mavx2 -mfma)
 endif()
 
 # Compiler warnings

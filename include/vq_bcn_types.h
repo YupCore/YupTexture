@@ -7,11 +7,21 @@
 #include <string>
 #include <fstream>
 #include <cassert>
+#include <cstring>
 
-#ifdef YUPTEXTURE_EXPORT
+#if defined(_WIN32) || defined(_WIN64)
+#if defined(YUPTEXTURE_EXPORT)
 #define YUPTEXTURE_API __declspec(dllexport)
 #else
 #define YUPTEXTURE_API __declspec(dllimport)
+#endif
+#else
+// GCC/Clang: default visibility for shared libs; empty for static.
+#if __GNUC__ >= 4
+#define YUPTEXTURE_API __attribute__((visibility("default")))
+#else
+#define YUPTEXTURE_API
+#endif
 #endif
 
 enum class BCFormat {

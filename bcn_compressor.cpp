@@ -1,5 +1,5 @@
 #include "bcn_compressor.h"
-#include <Compressonator.h>
+#include <compressonator.h>
 
 int32_t BCnCompressor::GetCMPFormat(BCFormat format)
 {
