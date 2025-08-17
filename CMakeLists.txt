@@ -16,7 +16,7 @@ find_package(OpenMP REQUIRED)
 find_package(zstd CONFIG REQUIRED)
 
 # Compressonator libraries
-set(COMPRESSONATOR_ROOT "${CMAKE_SOURCE_DIR}/thirdparty/Compressonator")
+set(COMPRESSONATOR_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/Compressonator")
 set(COMPRESSONATOR_INCLUDE_DIR "${COMPRESSONATOR_ROOT}/${PLATFORM_DIR}/include")
 set(COMPRESSONATOR_LIB_DIR "${COMPRESSONATOR_ROOT}/${PLATFORM_DIR}/lib/x64")
 
