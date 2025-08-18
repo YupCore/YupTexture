@@ -17,7 +17,7 @@ namespace fs = std::filesystem;
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 
-// --- MODIFIED: Image class to support LDR (uint8_t) and HDR (float) data ---
+// --- Image class to support LDR (uint8_t) and HDR (float) data ---
 class Image {
 public:
     int width = 0;
@@ -34,31 +34,36 @@ public:
 
         if (ext == ".hdr" || ext == ".exr") {
             isHDR = true;
-            float* pixels = stbi_loadf(filename.c_str(), &width, &height, &channels, 4);
+            // Pass 0 as desired_channels to load the image with its original channel count.
+            float* pixels = stbi_loadf(filename.c_str(), &width, &height, &channels, 0);
             if (!pixels) {
                 std::cerr << "Failed to load HDR image: " << stbi_failure_reason() << std::endl;
                 return false;
             }
-            size_t dataSize = (size_t)width * height * 4;
+            // Calculate data size using the actual number of channels loaded.
+            size_t dataSize = (size_t)width * height * channels;
             std::vector<float> float_data(pixels, pixels + dataSize);
             data = std::move(float_data);
             stbi_image_free(pixels);
         }
         else {
             isHDR = false;
-            uint8_t* pixels = stbi_load(filename.c_str(), &width, &height, &channels, 4);
+            // Pass 0 as desired_channels to load the image with its original channel count.
+            uint8_t* pixels = stbi_load(filename.c_str(), &width, &height, &channels, 0);
             if (!pixels) {
                 std::cerr << "Failed to load LDR image: " << stbi_failure_reason() << std::endl;
                 return false;
             }
-            size_t dataSize = (size_t)width * height * 4;
+            // Calculate data size using the actual number of channels loaded.
+            size_t dataSize = (size_t)width * height * channels;
             std::vector<uint8_t> byte_data(pixels, pixels + dataSize);
             data = std::move(byte_data);
             stbi_image_free(pixels);
         }
 
+        // Log the number of channels.
         std::cout << "Loaded " << filename << " (" << width << "x" << height
-            << ", type: " << (isHDR ? "HDR" : "LDR") << ")" << std::endl;
+            << ", " << channels << " channels" << ", type: " << (isHDR ? "HDR" : "LDR") << ")" << std::endl;
         return true;
     }
 
@@ -70,7 +75,8 @@ public:
 
         if (isHDR) {
             if (ext == ".hdr") {
-                result = stbi_write_hdr(filename.c_str(), width, height, 4, std::get<std::vector<float>>(data).data());
+                // Use the image's actual channel count when saving.
+                result = stbi_write_hdr(filename.c_str(), width, height, channels, std::get<std::vector<float>>(data).data());
             }
             else {
                 std::cerr << "Saving HDR data to non-HDR format (" << ext << ") is not supported. Please use .hdr." << std::endl;
@@ -79,10 +85,11 @@ public:
         }
         else {
             const auto& byte_data = std::get<std::vector<uint8_t>>(data);
-            if (ext == ".png") result = stbi_write_png(filename.c_str(), width, height, 4, byte_data.data(), width * 4);
-            else if (ext == ".jpg" || ext == ".jpeg") result = stbi_write_jpg(filename.c_str(), width, height, 4, byte_data.data(), 95);
-            else if (ext == ".bmp") result = stbi_write_bmp(filename.c_str(), width, height, 4, byte_data.data());
-            else if (ext == ".tga") result = stbi_write_tga(filename.c_str(), width, height, 4, byte_data.data());
+            // Use the image's actual channel count for all write operations.
+            if (ext == ".png") result = stbi_write_png(filename.c_str(), width, height, channels, byte_data.data(), width * channels);
+            else if (ext == ".jpg" || ext == ".jpeg") result = stbi_write_jpg(filename.c_str(), width, height, channels, byte_data.data(), 95);
+            else if (ext == ".bmp") result = stbi_write_bmp(filename.c_str(), width, height, channels, byte_data.data());
+            else if (ext == ".tga") result = stbi_write_tga(filename.c_str(), width, height, channels, byte_data.data());
             else { std::cerr << "Unsupported LDR format for saving: " << ext << std::endl; return false; }
         }
 
@@ -113,31 +120,64 @@ struct ImageStats {
     float redDominance = 0.0f;
 };
 
-ImageStats computeImageStats(const unsigned char* data, int width, int height) {
+// This function now accepts the channel count and processes pixels accordingly.
+ImageStats computeImageStats(const unsigned char* data, int width, int height, int channels) {
     ImageStats stats;
     long pixelCount = (long)width * height;
-    if (pixelCount == 0) return stats;
-    std::vector<double> channelSums(4, 0.0);
+    if (pixelCount == 0 || channels == 0) return stats;
+
+    std::vector<double> channelSums(channels, 0.0);
     long blueHighCount = 0;
     long redHighCount = 0;
-    for (int i = 0; i < pixelCount; ++i) {
-        if (std::abs(data[i * 4 + 0] - data[i * 4 + 1]) > 10 || std::abs(data[i * 4 + 1] - data[i * 4 + 2]) > 10) {
-            stats.isGrayscale = false;
-        }
-        for (int c = 0; c < 3; ++c) channelSums[c] += data[i * 4 + c];
-        if (data[i * 4 + 2] > 200) blueHighCount++;
-        if (data[i * 4 + 0] > 200) redHighCount++;
+
+    // Determine if grayscale. Considered grayscale for classification if fewer than 3 channels.
+    if (channels < 3) {
+        stats.isGrayscale = true;
     }
-    for (int c = 0; c < 3; ++c) stats.mean[c] = channelSums[c] / pixelCount;
-    for (int i = 0; i < pixelCount; ++i) {
-        for (int c = 0; c < 3; ++c) {
-            double diff = data[i * 4 + c] - stats.mean[c];
+    else {
+        stats.isGrayscale = true; // Assume grayscale until a color difference is found
+        for (long i = 0; i < pixelCount; ++i) {
+            const unsigned char* p = data + (size_t)i * channels;
+            if (std::abs(p[0] - p[1]) > 10 || std::abs(p[1] - p[2]) > 10) {
+                stats.isGrayscale = false;
+                break;
+            }
+        }
+    }
+
+    // Sum up pixel values for mean calculation and count dominant colors
+    for (long i = 0; i < pixelCount; ++i) {
+        const unsigned char* p = data + (size_t)i * channels;
+        for (int c = 0; c < channels; ++c) {
+            channelSums[c] += p[c];
+        }
+        if (channels >= 3 && p[2] > 200) blueHighCount++; // Blue is channel 2
+        if (channels >= 1 && p[0] > 200) redHighCount++;  // Red is channel 0
+    }
+
+    int channelsToCalc = std::min(channels, 4); // The stats struct holds up to 4 channels
+
+    // Calculate mean for each channel
+    for (int c = 0; c < channelsToCalc; ++c) {
+        stats.mean[c] = channelSums[c] / pixelCount;
+    }
+
+    // Calculate variance for each channel
+    for (long i = 0; i < pixelCount; ++i) {
+        const unsigned char* p = data + (size_t)i * channels;
+        for (int c = 0; c < channelsToCalc; ++c) {
+            double diff = p[c] - stats.mean[c];
             stats.variance[c] += diff * diff;
         }
     }
-    for (int c = 0; c < 3; ++c) stats.variance[c] /= pixelCount;
-    stats.blueDominance = static_cast<float>(blueHighCount) / pixelCount;
-    stats.redDominance = static_cast<float>(redHighCount) / pixelCount;
+    for (int c = 0; c < channelsToCalc; ++c) {
+        stats.variance[c] /= pixelCount;
+    }
+
+    // Calculate color dominance percentages
+    stats.blueDominance = (channels >= 3) ? static_cast<float>(blueHighCount) / pixelCount : 0.0f;
+    stats.redDominance = (channels >= 1) ? static_cast<float>(redHighCount) / pixelCount : 0.0f;
+
     return stats;
 }
 
@@ -168,7 +208,7 @@ MyTextureType classifyTextureByFilename(const std::string& filename) {
     return MyTextureType::Unknown;
 }
 
-// --- MODIFIED: Main processing function now handles LDR/HDR ---
+// --- Main processing function now handles LDR/HDR ---
 void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compressor) {
     std::cout << "\n--- Processing: " << filePath.filename().string() << " ---\n";
     Image image;
@@ -181,14 +221,15 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
     else {
         type = classifyTextureByFilename(filePath.filename().string());
         if (type == MyTextureType::Unknown) {
-            ImageStats stats = computeImageStats(std::get<std::vector<uint8_t>>(image.data).data(), image.width, image.height);
+            // Pass the actual channel count to the stats computation function.
+            ImageStats stats = computeImageStats(std::get<std::vector<uint8_t>>(image.data).data(), image.width, image.height, image.channels);
             type = classifyTextureByStats(stats);
         }
     }
 
     CompressionParams params;
     params.bcQuality = 1.0f;
-    params.zstdLevel = 16;
+    params.zstdLevel = 20;
     params.numThreads = 16;
     params.useVQ = true;
     params.useZstd = true;
@@ -197,13 +238,13 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
     case HDR:
         std::cout << "Texture Type: HDR (Using BC6H with VQ)\n";
         params.bcFormat = BCFormat::BC6H;
-        // --- MODIFIED: Enable VQ for HDR and set params ---
+        // --- Enable VQ for HDR and set params ---
         params.bcQuality = 0.25f; // Use a lower quality for HDR to set reasonable compression time
         params.quality = 1.0f; // Use a high quality for HDR VQ
         params.vq_min_cb_power = 6;  // 64 entries
         params.vq_max_cb_power = 12; // 4096 entriess
         params.vq_FastModeSampleRatio = 1.0f;
-        params.vq_maxIterations = 64;         // Allow more iterations for K-Means to converge
+        params.vq_maxIterations = 64;       // Allow more iterations for K-Means to converge
         break;
     case Albedo:
         params.bcFormat = BCFormat::BC1;
@@ -253,7 +294,7 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
             CompressedTexture compressed;
             // Call the correct Compress overload based on whether the image is HDR
             if (image.isHDR) {
-                compressed = compressor.CompressHDR(std::get<std::vector<float>>(image.data).data(), image.width, image.height, params);
+                compressed = compressor.CompressHDR(std::get<std::vector<float>>(image.data).data(), image.width, image.height, image.channels, params);
             }
             else {
                 compressed = compressor.Compress(std::get<std::vector<uint8_t>>(image.data).data(), image.width, image.height, image.channels, params);
@@ -280,31 +321,46 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
         Image outputImage;
         outputImage.width = image.width;
         outputImage.height = image.height;
-        outputImage.channels = 4;
+        outputImage.channels = image.channels;
         outputImage.isHDR = image.isHDR;
 
         if (image.isHDR) {
-            outputImage.data = compressor.DecompressToRGBAF(loadedTexture);
+            outputImage.data = compressor.DecompressHDR(loadedTexture);
         }
         else {
-            outputImage.data = compressor.DecompressToRGBA(loadedTexture);
+            outputImage.data = compressor.Decompress(loadedTexture);
             auto end_decompress = std::chrono::high_resolution_clock::now();
-            std::cout << "Decompression to RGBA finished in " << std::fixed << std::setprecision(4)
+            std::cout << "Decompression to RGB finished in " << std::fixed << std::setprecision(4)
                 << std::chrono::duration<double>(end_decompress - start_decompress).count() << "s.\n";
 
             // Special handling for BC5 normal map visualization
-            if (params.bcFormat == BCFormat::BC5) {
-                std::cout << "Reconstructing Z-channel for BC5 normal map visualization...\n";
-                auto& decompressed_data = std::get<std::vector<uint8_t>>(outputImage.data);
+            if (params.bcFormat == BCFormat::BC5 && !image.isHDR && image.channels == 3) {
+                std::cout << "Reconstructing Z-channel for BC5 normal map visualization.\n";
+
+                auto& src = std::get<std::vector<uint8_t>>(outputImage.data);
+                const int srcStride = outputImage.channels; // 2 if RG, 3 if RGB, 4 if RGBA
+
+                std::vector<uint8_t> rgb_data(outputImage.width * outputImage.height * 3);
+
 #pragma omp parallel for
-                for (int64_t i = 0; i < decompressed_data.size(); i += 4) {
-                    float x = (decompressed_data[i + 0] / 255.0f) * 2.0f - 1.0f;
-                    float y = (decompressed_data[i + 1] / 255.0f) * 2.0f - 1.0f;
-                    float z_squared = 1.0f - x * x - y * y;
-                    float z = (z_squared > 0.0f) ? sqrt(z_squared) : 0.0f;
-                    decompressed_data[i + 2] = static_cast<uint8_t>((z * 0.5f + 0.5f) * 255.0f);
-                    decompressed_data[i + 3] = 255;
+                for (int64_t i = 0; i < static_cast<int64_t>(outputImage.width) * outputImage.height; ++i) {
+                    const int64_t s = i * srcStride;
+                    const int64_t d = i * 3;
+
+                    const uint8_t r8 = src[s + 0];
+                    const uint8_t g8 = src[s + 1];
+
+                    const float x = (r8 / 255.0f) * 2.0f - 1.0f;
+                    const float y = (g8 / 255.0f) * 2.0f - 1.0f;
+                    const float z2 = 1.0f - x * x - y * y;
+                    const float z = (z2 > 0.0f) ? std::sqrt(z2) : 0.0f;
+
+                    rgb_data[d + 0] = r8;
+                    rgb_data[d + 1] = g8;
+                    rgb_data[d + 2] = static_cast<uint8_t>(std::clamp(z * 0.5f + 0.5f, 0.0f, 1.0f) * 255.0f);
                 }
+
+                outputImage.data = std::move(rgb_data);
             }
         }
 

@@ -4,15 +4,12 @@
 #include <memory>
 #include <vector>
 
-// Forward declaration for the CMP_FORMAT enum from Compressonator
-enum CMP_FORMAT : unsigned int;
-
 class YUPTEXTURE_API BCnCompressor {
 private:
     // Gets the Compressonator format for the compressed texture
     int32_t GetCMPFormat(BCFormat format);
     // Gets the Compressonator format for the source (uncompressed) texture
-    CMP_FORMAT GetSourceCMPFormat(uint32_t channelCount, bool isFloat);
+    int32_t GetSourceCMPFormat(uint32_t channelCount, bool isFloat);
 
 public:
     // --- LDR Compression ---
@@ -24,7 +21,8 @@ public:
         uint32_t channelCount,
         BCFormat format,
         int numThreads,
-        float quality = 1.0f
+        float quality = 1.0f,
+        uint8_t alphaThreshold = 128
     );
 
     // --- HDR Compression ---

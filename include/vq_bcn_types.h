@@ -112,7 +112,7 @@ struct CompressedTexture {
 
     void Load(const std::vector<uint8_t> mem)
     {
-        assert(mem.size() > TextureInfo);
+        assert(mem.size() > sizeof(TextureInfo));
         std::memcpy(&info, mem.data(), sizeof(TextureInfo));
 
         size_t dataSize = mem.size() - sizeof(TextureInfo);
