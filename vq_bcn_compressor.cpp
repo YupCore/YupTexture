@@ -135,7 +135,7 @@ CompressedTexture VQBCnCompressor::Compress(const uint8_t* inData, uint32_t widt
 
     std::vector<std::vector<uint8_t>> pixelCentroids;
     result.codebook = vqEncoder.BuildCodebook(pixelBlocks, channels, pixelCentroids, params);
-    result.indices = vqEncoder.QuantizeBlocks(pixelBlocks, pixelCentroids, params);
+    result.indices = vqEncoder.QuantizeBlocks(pixelBlocks, channels, pixelCentroids, params);
 
     result.info.storedCodebookEntries = result.codebook.entries.size();
     size_t codebookDataSize = result.info.storedCodebookEntries * blockSize;

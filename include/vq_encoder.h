@@ -2,6 +2,7 @@
 
 #include "vq_bcn_types.h"
 #include "bcn_compressor.h"
+#include <colorm.h>
 #include <random>
 #include <limits>
 #include <cmath>
@@ -10,34 +11,19 @@
 #include <numeric>
 #include <atomic>
 #include <vector>
-#include <stdexcept> // For std::runtime_error
+#include <stdexcept>
 
-namespace ColorLuts {
-    // Pre-calculate lookup tables for expensive color conversions.
-    static const std::array<float, 256> sRGB_to_Linear = [] {
-        std::array<float, 256> table{};
-        for (int i = 0; i < 256; ++i) {
-            float v = i / 255.0f;
-            table[i] = (v > 0.04045f) ? powf((v + 0.055f) / 1.055f, 2.4f) : v / 12.92f;
-        }
-        return table;
-        }();
-
-    static const std::array<uint8_t, 4096> Linear_to_sRGB = [] {
-        std::array<uint8_t, 4096> table{};
-        for (int i = 0; i < 4096; ++i) {
-            float v = i / 4095.0f;
-            v = (v > 0.0031308f) ? (1.055f * powf(v, 1.0f / 2.4f) - 0.055f) : (v * 12.92f);
-            table[i] = static_cast<uint8_t>(std::clamp(v * 255.0f, 0.0f, 255.0f));
-        }
-        return table;
-        }();
-}
+// OklabBlock will be our standard internal format for processing a 4x4 block of pixels.
+// Each pixel is represented by 4 floats (L, a, b, Alpha), so a block is 16 * 4 = 64 floats.
+using OklabBlock = std::vector<float>;
+// A separate type for HDR, though the underlying type is the same.
+using OklabFloatBlock = std::vector<float>;
 
 struct CompressionConfig {
 public:
     uint32_t maxIterations = 32;
-    DistanceMetric metric = DistanceMetric::PERCEPTUAL_LAB;
+    // Metric enum updated for clarity.
+    DistanceMetric metric = DistanceMetric::PERCEPTUAL_OKLAB;
 
     // --- General Settings ---
     float fastModeSampleRatio = 1.0f;
@@ -54,38 +40,39 @@ public:
     uint32_t codebookSize;
 };
 
-class YUPTEXTURE_API VQEncoder {
+class VQEncoder {
 private:
     CompressionConfig config;
     BCFormat bcFormat;
     BCnCompressor bcnCompressor;
     std::mt19937 rng;
 
-    // --- Color Space Conversion (Originals) ---
-    void RgbToCielab(const uint8_t* rgb, float* lab) const;
-    void CielabToRgb(const float* lab, uint8_t* rgb) const;
+    // --- Color Space Conversion Helpers (Refactored for Oklab and dynamic channels) ---
+    void PixelToOklab(const uint8_t* pixel, uint8_t channelCount, float* oklab) const;
+    void OklabToPixel(const float* oklab, uint8_t channelCount, uint8_t* pixel) const;
+    OklabBlock PixelBlockToOklabBlock(const std::vector<uint8_t>& pixelBlock, uint8_t channelCount) const;
+    std::vector<uint8_t> OklabBlockToPixelBlock(const OklabBlock& oklabBlock, uint8_t channelCount) const;
 
-    // --- Color Space Conversion Helpers (Refactored for dynamic channels) ---
-    void PixelToCielab(const uint8_t* pixel, uint8_t channelCount, float* lab) const;
-    void CielabToPixel(const float* lab, uint8_t channelCount, uint8_t* pixel) const;
-    CielabBlock PixelBlockToCielabBlock(const std::vector<uint8_t>& pixelBlock, uint8_t channelCount) const;
-    std::vector<uint8_t> CielabBlockToPixelBlock(const CielabBlock& labBlock, uint8_t channelCount) const;
+    // --- HDR Color Space Conversion Helpers ---
+    void RgbaFloatToOklab(const float* pixel, uint8_t channelCount, float* oklab) const;
+    void OklabToRgbaFloat(const float* oklab, uint8_t channelCount, float* pixel) const;
+    OklabFloatBlock RgbaFloatBlockToOklabBlock(const std::vector<float>& pixelBlock, uint8_t channelCount) const;
+    std::vector<float> OklabBlockToRgbaFloatBlock(const OklabFloatBlock& oklabBlock, uint8_t channelCount) const;
 
     // --- Distance Functions ---
     float BlockDistanceSAD(const uint8_t* a, const uint8_t* b, uint8_t channelCount) const;
-    float CielabBlockDistanceSq_SIMD(const CielabBlock& labA, const CielabBlock& labB) const;
-
-    std::vector<uint8_t> CompressSingleBlock(const uint8_t* pixelBlock, uint8_t channels, int numThreads, float quality);
-
-    // --- HDR ---
+    float OklabBlockDistanceSq_SIMD(const OklabBlock& oklabA, const OklabBlock& oklabB) const;
     float OklabFloatBlockDistanceSq_SIMD(const OklabFloatBlock& labA, const OklabFloatBlock& labB) const;
-    std::vector<uint8_t> CompressSingleBlockHDR(const std::vector<float>& pixelBlock, uint8_t channels, int numThreads, float quality);
+
+    // --- Block Compression ---
+    std::vector<uint8_t> CompressSingleBlock(const uint8_t* pixelBlock, uint8_t channels, const CompressionParams& params);
+    std::vector<uint8_t> CompressSingleBlockHDR(const std::vector<float>& pixelBlock, uint8_t channels, const CompressionParams& params);
 
 public:
     VQEncoder(const CompressionConfig& cfg = CompressionConfig());
     void SetFormat(BCFormat format);
 
-    // --- Public API ---
+    // --- Public API (LDR) ---
     VQCodebook BuildCodebook(
         const std::vector<std::vector<uint8_t>>& allPixelBlocks,
         uint8_t channels,
@@ -95,10 +82,12 @@ public:
 
     std::vector<uint32_t> QuantizeBlocks(
         const std::vector<std::vector<uint8_t>>& pixelBlocks,
+        uint8_t channels,
         const std::vector<std::vector<uint8_t>>& pixelCentroids,
         const CompressionParams& params
     );
 
+    // --- Public API (HDR) ---
     VQCodebook BuildCodebookHDR(
         const std::vector<std::vector<float>>& allPixelFloatBlocks,
         uint8_t channels,

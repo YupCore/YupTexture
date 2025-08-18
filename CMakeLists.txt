@@ -82,6 +82,7 @@ set(HEADER_FILES
     include/bcn_compressor.h
     include/vq_bcn_compressor.h
     include/vq_encoder.h
+    thirdparty/colorm/include/colorm.h
 )
 
 # Create the shared library (DLL)
@@ -90,6 +91,7 @@ add_library(${PROJECT_NAME} SHARED ${HEADER_FILES} ${SOURCE_FILES})
 # Include directories
 target_include_directories(${PROJECT_NAME} PRIVATE
     include
+    thirdparty/colorm/include/
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${COMPRESSONATOR_INCLUDE_DIR}
 )

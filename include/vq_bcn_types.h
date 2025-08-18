@@ -154,8 +154,8 @@ struct CompressedTexture {
 };
 
 enum class DistanceMetric {
-    RGB_SIMD,       // Fastest: SAD on RGB values, accelerated with AVX2.
-    PERCEPTUAL_LAB  // High Quality: Euclidean distance in CIELAB color space.
+    SAD_SIMD,       // Fastest: SAD on RGB values, accelerated with AVX2.
+    PERCEPTUAL_OKLAB  // High Quality: Euclidean distance in OKLAB color space.
 };
 
 struct CompressionParams {
@@ -170,7 +170,7 @@ struct CompressionParams {
     // --- VQ Settings ---
     float vq_FastModeSampleRatio = 1.0f;
     float quality = 0.5f;
-    DistanceMetric vq_Metric = DistanceMetric::PERCEPTUAL_LAB;
+    DistanceMetric vq_Metric = DistanceMetric::PERCEPTUAL_OKLAB;
     uint32_t vq_min_cb_power = 4; // 2^4 = 16 entries at quality=0
     uint32_t vq_max_cb_power = 10; // 2^10 = 1024 entries at quality=1
     uint32_t vq_maxIterations = 32;
