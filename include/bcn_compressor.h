@@ -4,45 +4,58 @@
 #include <memory>
 #include <vector>
 
+// Forward declaration for the CMP_FORMAT enum from Compressonator
+enum CMP_FORMAT : unsigned int;
+
 class YUPTEXTURE_API BCnCompressor {
 private:
+    // Gets the Compressonator format for the compressed texture
     int32_t GetCMPFormat(BCFormat format);
+    // Gets the Compressonator format for the source (uncompressed) texture
+    CMP_FORMAT GetSourceCMPFormat(uint32_t channelCount, bool isFloat);
+
 public:
     // --- LDR Compression ---
-    std::vector<uint8_t> CompressRGBA(
-        const uint8_t* rgbaData,
+    // Compresses LDR image data (e.g., from a PNG or JPG) into a BCn format.
+    std::vector<uint8_t> Compress(
+        const uint8_t* inData,
         uint32_t width,
         uint32_t height,
-        uint8_t channels,
+        uint32_t channelCount,
         BCFormat format,
         int numThreads,
-        float quality = 1.0f,
-        uint8_t alphaThreshold = 128
+        float quality = 1.0f
     );
 
     // --- HDR Compression ---
+    // Compresses HDR image data (float) into a BCn format (typically BC6H).
     std::vector<uint8_t> CompressHDR(
-        const float* rgbaData,
+        const float* inData,
         uint32_t width,
         uint32_t height,
+        uint32_t channelCount,
         BCFormat format,
         int numThreads,
         float quality = 1.0f
     );
 
     // --- LDR Decompression ---
-    std::vector<uint8_t> DecompressToRGBA(
+    // Decompresses a BCn texture to LDR image data.
+    std::vector<uint8_t> Decompress(
         const uint8_t* bcData,
         uint32_t width,
         uint32_t height,
+        uint32_t channelCount,
         BCFormat format
     );
 
     // --- HDR Decompression ---
-    std::vector<float> DecompressToRGBAF(
+    // Decompresses a BCn texture (typically BC6H) to HDR (float) image data.
+    std::vector<float> DecompressHDR(
         const uint8_t* bcData,
         uint32_t width,
         uint32_t height,
+        uint32_t channelCount,
         BCFormat format
     );
 };
