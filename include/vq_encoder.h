@@ -12,9 +12,6 @@
 #include <vector>
 #include <stdexcept> // For std::runtime_error
 
-using CielabBlock = std::vector<float>;
-using OklabFloatBlock = std::vector<float>;
-
 namespace ColorLuts {
     // Pre-calculate lookup tables for expensive color conversions.
     static const std::array<float, 256> sRGB_to_Linear = [] {
@@ -64,56 +61,55 @@ private:
     BCnCompressor bcnCompressor;
     std::mt19937 rng;
 
-    // --- Color Space Conversion ---
+    // --- Color Space Conversion (Originals) ---
     void RgbToCielab(const uint8_t* rgb, float* lab) const;
     void CielabToRgb(const float* lab, uint8_t* rgb) const;
-    CielabBlock RgbaBlockToCielabBlock(const std::vector<uint8_t>& rgbaBlock) const;
-    std::vector<uint8_t> CielabBlockToRgbaBlock(const CielabBlock& labBlock) const;
 
-    // --- sRGB color space math ---
+    // --- Color Space Conversion Helpers (Refactored for dynamic channels) ---
+    void PixelToCielab(const uint8_t* pixel, uint8_t channelCount, float* lab) const;
+    void CielabToPixel(const float* lab, uint8_t channelCount, uint8_t* pixel) const;
+    CielabBlock PixelBlockToCielabBlock(const std::vector<uint8_t>& pixelBlock, uint8_t channelCount) const;
+    std::vector<uint8_t> CielabBlockToPixelBlock(const CielabBlock& labBlock, uint8_t channelCount) const;
+
     // --- Distance Functions ---
-    float RgbaBlockDistanceSAD_SIMD(const uint8_t* rgbaA, const uint8_t* rgbaB) const;
-
-    // Squared Euclidean distance for CIELAB blocks
+    float BlockDistanceSAD(const uint8_t* a, const uint8_t* b, uint8_t channelCount) const;
     float CielabBlockDistanceSq_SIMD(const CielabBlock& labA, const CielabBlock& labB) const;
 
-    std::vector<uint8_t> CompressSingleBlock(const uint8_t* rgbaBlock, uint8_t channels, int numThreads, float quality, uint8_t alphaThreshold = 128);
+    std::vector<uint8_t> CompressSingleBlock(const uint8_t* pixelBlock, uint8_t channels, int numThreads, float quality);
 
-    // HDR oklab color space math
-
-    // --- Added luminance weighting to the distance function ---
+    // --- HDR ---
     float OklabFloatBlockDistanceSq_SIMD(const OklabFloatBlock& labA, const OklabFloatBlock& labB) const;
-
-    std::vector<uint8_t> CompressSingleBlockHDR(const std::vector<float>& rgbaBlock, int numThreads, float quality);
+    std::vector<uint8_t> CompressSingleBlockHDR(const std::vector<float>& pixelBlock, uint8_t channels, int numThreads, float quality);
 
 public:
     VQEncoder(const CompressionConfig& cfg = CompressionConfig());
-
     void SetFormat(BCFormat format);
 
     // --- Public API ---
     VQCodebook BuildCodebook(
-        const std::vector<std::vector<uint8_t>>& allRgbaBlocks,
+        const std::vector<std::vector<uint8_t>>& allPixelBlocks,
         uint8_t channels,
-        std::vector<std::vector<uint8_t>>& outRgbaCentroids,
+        std::vector<std::vector<uint8_t>>& outPixelCentroids,
         const CompressionParams& params
     );
 
     std::vector<uint32_t> QuantizeBlocks(
-        const std::vector<std::vector<uint8_t>>& rgbaBlocks,
-        const std::vector<std::vector<uint8_t>>& rgbaCentroids,
+        const std::vector<std::vector<uint8_t>>& pixelBlocks,
+        const std::vector<std::vector<uint8_t>>& pixelCentroids,
         const CompressionParams& params
     );
 
     VQCodebook BuildCodebookHDR(
-        const std::vector<std::vector<float>>& rgbaFloatBlocks,
-        std::vector<std::vector<float>>& outRgbaCentroids,
+        const std::vector<std::vector<float>>& allPixelFloatBlocks,
+        uint8_t channels,
+        std::vector<std::vector<float>>& outPixelFloatCentroids,
         const CompressionParams& params
     );
 
     std::vector<uint32_t> QuantizeBlocksHDR(
-        const std::vector<std::vector<float>>& rgbaFloatBlocks,
-        const std::vector<std::vector<float>>& rgbaCentroids,
+        const std::vector<std::vector<float>>& pixelFloatBlocks,
+        uint8_t channels,
+        const std::vector<std::vector<float>>& pixelFloatCentroids,
         const CompressionParams& params
     );
 };

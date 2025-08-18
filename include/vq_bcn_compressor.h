@@ -16,33 +16,25 @@ private:
     struct ZstdContext {
         void* cctx;
         void* dctx;
-
         ZstdContext();
-
         ~ZstdContext();
     };
 
     std::unique_ptr<ZstdContext> zstdCtx;
-
-    // --- Dictionary pointers ---
     void* cdict = nullptr;
     void* ddict = nullptr;
 
-    // Helper to compress a payload with ZSTD
     std::vector<uint8_t> compressWithZstd(const std::vector<uint8_t>& payload, int level, int numThreads, bool enableLdm);
 
 public:
     VQBCnCompressor();
-
-    // --- Destructor to free dictionaries ---
     ~VQBCnCompressor();
 
-    // --- Method to load a pre-trained dictionary ---
     void LoadDictionary(const uint8_t* dictData, size_t dictSize);
 
     // Main compression function for LDR textures
     CompressedTexture Compress(
-        const uint8_t* rgbaData,
+        const uint8_t* inData, // Renamed from rgbaData
         uint32_t width,
         uint32_t height,
         uint8_t channels,
@@ -51,15 +43,18 @@ public:
 
     // A distinct method for HDR textures
     CompressedTexture CompressHDR(
-        const float* rgbaData,
+        const float* inData, // Renamed from rgbaData
         uint32_t width,
         uint32_t height,
+        uint8_t channels, // Added channels parameter
         const CompressionParams& params
     );
 
     std::vector<uint8_t> DecompressToBCn(const CompressedTexture& compressed, int numThreads = 16);
 
-    std::vector<uint8_t> DecompressToRGBA(const CompressedTexture& compressed);
+    // Decompresses to the original channel count stored in the texture info.
+    std::vector<uint8_t> Decompress(const CompressedTexture& compressed);
 
-    std::vector<float> DecompressToRGBAF(const CompressedTexture& compressed);
+    // Decompresses HDR to the original channel count stored in the texture info.
+    std::vector<float> DecompressHDR(const CompressedTexture& compressed);
 };

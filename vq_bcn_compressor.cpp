@@ -77,20 +77,21 @@ void VQBCnCompressor::LoadDictionary(const uint8_t* dictData, size_t dictSize)
     }
 }
 
-CompressedTexture VQBCnCompressor::Compress(const uint8_t* rgbaData, uint32_t width, uint32_t height, uint8_t channels, const CompressionParams& params)
+CompressedTexture VQBCnCompressor::Compress(const uint8_t* inData, uint32_t width, uint32_t height, uint8_t channels, const CompressionParams& params)
 {
     CompressedTexture result;
     result.info.width = width;
     result.info.height = height;
     result.info.format = params.bcFormat;
+    result.info.originalChannelCount = channels; // Store original channel count
     result.info.compressionFlags = COMPRESSION_FLAGS_DEFAULT;
 
-    // --- Check for large texture to enable LDM ---
     bool enableLdm = (width >= 4000 || height >= 4000);
 
-    auto bcData = bcnCompressor.CompressRGBA(
-        rgbaData, width, height, channels, params.bcFormat,
-        params.numThreads, params.bcQuality, params.alphaThreshold
+    // Use the generic 'Compress' which handles all channel counts
+    auto bcData = bcnCompressor.Compress(
+        inData, width, height, channels, params.bcFormat,
+        params.numThreads, params.bcQuality
     );
     if (bcData.empty()) {
         throw std::runtime_error("BCn compression failed");
@@ -125,15 +126,16 @@ CompressedTexture VQBCnCompressor::Compress(const uint8_t* rgbaData, uint32_t wi
     vqEncoder.SetFormat(params.bcFormat);
 
     const size_t numBlocks = bcData.size() / blockSize;
-    std::vector<std::vector<uint8_t>> rgbaBlocks(numBlocks);
+    // Decompress blocks back to their original channel count, not forced RGBA
+    std::vector<std::vector<uint8_t>> pixelBlocks(numBlocks);
 #pragma omp parallel for num_threads(params.numThreads)
     for (int64_t i = 0; i < numBlocks; ++i) {
-        rgbaBlocks[i] = bcnCompressor.DecompressToRGBA(&bcData[i * blockSize], 4, 4, params.bcFormat);
+        pixelBlocks[i] = bcnCompressor.Decompress(&bcData[i * blockSize], 4, 4, channels, params.bcFormat);
     }
 
-    std::vector<std::vector<uint8_t>> rgbaCentroids;
-    result.codebook = vqEncoder.BuildCodebook(rgbaBlocks, channels, rgbaCentroids, params);
-    result.indices = vqEncoder.QuantizeBlocks(rgbaBlocks, rgbaCentroids, params);
+    std::vector<std::vector<uint8_t>> pixelCentroids;
+    result.codebook = vqEncoder.BuildCodebook(pixelBlocks, channels, pixelCentroids, params);
+    result.indices = vqEncoder.QuantizeBlocks(pixelBlocks, pixelCentroids, params);
 
     result.info.storedCodebookEntries = result.codebook.entries.size();
     size_t codebookDataSize = result.info.storedCodebookEntries * blockSize;
@@ -161,7 +163,7 @@ CompressedTexture VQBCnCompressor::Compress(const uint8_t* rgbaData, uint32_t wi
     return result;
 }
 
-CompressedTexture VQBCnCompressor::CompressHDR(const float* rgbaData, uint32_t width, uint32_t height, const CompressionParams& params)
+CompressedTexture VQBCnCompressor::CompressHDR(const float* inData, uint32_t width, uint32_t height, uint8_t channels, const CompressionParams& params)
 {
     // --- Handle VQ Bypass ---
     if (!params.useVQ) {
@@ -169,12 +171,13 @@ CompressedTexture VQBCnCompressor::CompressHDR(const float* rgbaData, uint32_t w
         result.info.width = width;
         result.info.height = height;
         result.info.format = params.bcFormat;
+        result.info.originalChannelCount = channels;
         result.info.compressionFlags = COMPRESSION_FLAGS_IS_HDR | COMPRESSION_FLAGS_VQ_BYPASSED;
         result.info.storedCodebookEntries = 0;
 
         bool enableLdm = (width >= 4000 || height >= 4000);
 
-        auto bcData = bcnCompressor.CompressHDR(rgbaData, width, height, params.bcFormat, params.numThreads, params.bcQuality);
+        auto bcData = bcnCompressor.CompressHDR(inData, width, height, channels, params.bcFormat, params.numThreads, params.bcQuality);
         if (bcData.empty()) {
             throw std::runtime_error("HDR BCn compression failed");
         }
@@ -193,6 +196,7 @@ CompressedTexture VQBCnCompressor::CompressHDR(const float* rgbaData, uint32_t w
     result.info.width = width;
     result.info.height = height;
     result.info.format = params.bcFormat;
+    result.info.originalChannelCount = channels;
     result.info.compressionFlags = COMPRESSION_FLAGS_IS_HDR;
 
     CompressionConfig vqConfig;
@@ -205,15 +209,15 @@ CompressedTexture VQBCnCompressor::CompressHDR(const float* rgbaData, uint32_t w
     VQEncoder vqEncoder(vqConfig);
     vqEncoder.SetFormat(params.bcFormat);
 
-    // Chunk input float data into 4x4 blocks
+    // Chunk input float data into 4x4 blocks respecting channel count
     const size_t numBlocksX = (width + 3) / 4;
     const size_t numBlocksY = (height + 3) / 4;
     const size_t numBlocks = numBlocksX * numBlocksY;
-    std::vector<std::vector<float>> rgbaFloatBlocks(numBlocks);
+    std::vector<std::vector<float>> pixelFloatBlocks(numBlocks);
 
 #pragma omp parallel for num_threads(params.numThreads)
     for (int64_t i = 0; i < numBlocks; ++i) {
-        rgbaFloatBlocks[i].resize(16 * 4);
+        pixelFloatBlocks[i].resize(16 * channels); // Use dynamic channel count
         size_t blockX = i % numBlocksX;
         size_t blockY = i / numBlocksX;
         size_t startX = blockX * 4;
@@ -223,19 +227,17 @@ CompressedTexture VQBCnCompressor::CompressHDR(const float* rgbaData, uint32_t w
             for (size_t x = 0; x < 4; ++x) {
                 size_t pX = std::min(startX + x, (size_t)width - 1);
                 size_t pY = std::min(startY + y, (size_t)height - 1);
-                const float* srcPixel = &rgbaData[(pY * width + pX) * 4];
-                float* dstPixel = &rgbaFloatBlocks[i][(y * 4 + x) * 4];
-                std::copy(srcPixel, srcPixel + 4, dstPixel);
+                const float* srcPixel = &inData[(pY * width + pX) * channels];
+                float* dstPixel = &pixelFloatBlocks[i][(y * 4 + x) * channels];
+                std::copy(srcPixel, srcPixel + channels, dstPixel);
             }
         }
     }
 
     std::vector<uint8_t> payloadData;
-
-    // --- STANDARD VQ PATH ---
-    std::vector<std::vector<float>> rgbaCentroids;
-    result.codebook = vqEncoder.BuildCodebookHDR(rgbaFloatBlocks, rgbaCentroids, params);
-    result.indices = vqEncoder.QuantizeBlocksHDR(rgbaFloatBlocks, rgbaCentroids, params);
+    std::vector<std::vector<float>> pixelFloatCentroids;
+    result.codebook = vqEncoder.BuildCodebookHDR(pixelFloatBlocks, channels, pixelFloatCentroids, params);
+    result.indices = vqEncoder.QuantizeBlocksHDR(pixelFloatBlocks, channels, pixelFloatCentroids, params);
 
     result.info.storedCodebookEntries = result.codebook.entries.size();
     const size_t blockSize = BCBlockSize::GetSize(params.bcFormat);
@@ -253,7 +255,6 @@ CompressedTexture VQBCnCompressor::CompressHDR(const float* rgbaData, uint32_t w
     result.codebook.entries.clear();
     result.indices.clear();
 
-    // Compress final payload with Zstd
     if (!params.useZstd) {
         result.info.compressionFlags |= COMPRESSION_FLAGS_ZSTD_BYPASSED;
         result.compressedData = std::move(payloadData);
@@ -340,28 +341,30 @@ std::vector<uint8_t> VQBCnCompressor::DecompressToBCn(const CompressedTexture& c
     return bcData;
 }
 
-std::vector<uint8_t> VQBCnCompressor::DecompressToRGBA(const CompressedTexture& compressed)
+std::vector<uint8_t> VQBCnCompressor::Decompress(const CompressedTexture& compressed)
 {
     if (compressed.info.compressionFlags & COMPRESSION_FLAGS_IS_HDR) {
-        throw std::runtime_error("Cannot decompress HDR texture to 8-bit RGBA. Use DecompressToRGBAF instead.");
+        throw std::runtime_error("Cannot decompress HDR texture to 8-bit data. Use DecompressHDR instead.");
     }
     auto bcData = DecompressToBCn(compressed);
-    auto rgbaData = bcnCompressor.DecompressToRGBA(
-        bcData.data(), compressed.info.width, compressed.info.height, compressed.info.format
+    // Decompress to the original channel count stored in the file info
+    auto rawData = bcnCompressor.Decompress(
+        bcData.data(), compressed.info.width, compressed.info.height, compressed.info.originalChannelCount, compressed.info.format
     );
 
-    return rgbaData;
+    return rawData;
 }
 
-std::vector<float> VQBCnCompressor::DecompressToRGBAF(const CompressedTexture& compressed)
+std::vector<float> VQBCnCompressor::DecompressHDR(const CompressedTexture& compressed)
 {
     if (!(compressed.info.compressionFlags & COMPRESSION_FLAGS_IS_HDR)) {
-        throw std::runtime_error("Cannot decompress LDR texture to float RGBA. Use DecompressToRGBA instead.");
+        throw std::runtime_error("Cannot decompress LDR texture to float data. Use Decompress instead.");
     }
     auto bcData = DecompressToBCn(compressed);
-    auto rgbaFloatData = bcnCompressor.DecompressToRGBAF(
-        bcData.data(), compressed.info.width, compressed.info.height, compressed.info.format
+    // Decompress to the original channel count stored in the file info
+    auto rawFloatData = bcnCompressor.DecompressHDR(
+        bcData.data(), compressed.info.width, compressed.info.height, compressed.info.originalChannelCount, compressed.info.format
     );
 
-    return rgbaFloatData;
+    return rawFloatData;
 }

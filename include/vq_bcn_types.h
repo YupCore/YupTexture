@@ -72,6 +72,7 @@ struct TextureInfo {
     uint32_t width;
     uint32_t height;
     BCFormat format;
+    uint8_t originalChannelCount; // ADDED: Store the original channel count of the source image.
     uint32_t storedCodebookEntries;
     uint32_t compressionFlags;
 
@@ -79,9 +80,11 @@ struct TextureInfo {
         width(0),
         height(0),
         format(BCFormat::BC1),
+        originalChannelCount(4), // Default to 4, but will be overwritten on compression.
         storedCodebookEntries(0),
         compressionFlags(COMPRESSION_FLAGS_DEFAULT)
-    { }
+    {
+    }
 
     size_t GetBlocksX() const { return (width + 3) / 4; }
     size_t GetBlocksY() const { return (height + 3) / 4; }

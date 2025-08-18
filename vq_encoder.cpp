@@ -1,5 +1,4 @@
 #include "vq_encoder.h"
-#include "oklab_math.hpp"
 #include <immintrin.h> // For SIMD intrinsics (AVX2)
 
 CompressionConfig::CompressionConfig(float quality_level)
@@ -16,22 +15,14 @@ void CompressionConfig::SetQuality(float quality_level)
     codebookSize = 1 << power; // 2^power
 }
 
-float VQEncoder::RgbaBlockDistanceSAD_SIMD(const uint8_t* rgbaA, const uint8_t* rgbaB) const
+float VQEncoder::BlockDistanceSAD(const uint8_t* a, const uint8_t* b, uint8_t channelCount) const
 {
-    // Sum of Absolute Differences (SAD) is a good proxy for L1 distance and very fast.
-    __m256i diff_sum = _mm256_setzero_si256();
-
-    // Process 64 bytes in two 32-byte chunks
-    __m256i a1 = _mm256_loadu_si256((__m256i*)(rgbaA));
-    __m256i b1 = _mm256_loadu_si256((__m256i*)(rgbaB));
-    diff_sum = _mm256_add_epi64(diff_sum, _mm256_sad_epu8(a1, b1));
-
-    __m256i a2 = _mm256_loadu_si256((__m256i*)(rgbaA + 32));
-    __m256i b2 = _mm256_loadu_si256((__m256i*)(rgbaB + 32));
-    diff_sum = _mm256_add_epi64(diff_sum, _mm256_sad_epu8(a2, b2));
-
-    // The result is stored in two 64-bit lanes, sum them up.
-    return (float)(_mm256_extract_epi64(diff_sum, 0) + _mm256_extract_epi64(diff_sum, 2));
+    const size_t blockSizeBytes = 16 * channelCount;
+    uint32_t sad = 0;
+    for (size_t i = 0; i < blockSizeBytes; ++i) {
+        sad += std::abs(static_cast<int>(a[i]) - static_cast<int>(b[i]));
+    }
+    return static_cast<float>(sad);
 }
 
 float VQEncoder::CielabBlockDistanceSq_SIMD(const CielabBlock& labA, const CielabBlock& labB) const
@@ -122,26 +113,72 @@ void VQEncoder::CielabToRgb(const float* lab, uint8_t* rgb) const {
     rgb[2] = ColorLuts::Linear_to_sRGB[static_cast<int>(std::clamp(b_lin, 0.0f, 1.0f) * 4095.0f)];
 }
 
-CielabBlock VQEncoder::RgbaBlockToCielabBlock(const std::vector<uint8_t>& rgbaBlock) const {
-    CielabBlock labBlock(16 * 4);
+void VQEncoder::PixelToCielab(const uint8_t* pixel, uint8_t channelCount, float* lab) const {
+    uint8_t rgb[3] = { 0, 0, 0 };
+    switch (channelCount) {
+    case 1: // Grayscale
+        rgb[0] = rgb[1] = rgb[2] = pixel[0];
+        lab[3] = 255.0f; // Full alpha
+        break;
+    case 2: // Grayscale + Alpha
+        rgb[0] = rgb[1] = rgb[2] = pixel[0];
+        lab[3] = static_cast<float>(pixel[1]);
+        break;
+    case 3: // RGB
+        std::memcpy(rgb, pixel, 3);
+        lab[3] = 255.0f; // Full alpha
+        break;
+    case 4: // RGBA
+        std::memcpy(rgb, pixel, 3);
+        lab[3] = static_cast<float>(pixel[3]);
+        break;
+    default:
+        // Should not happen
+        lab[0] = lab[1] = lab[2] = lab[3] = 0;
+        return;
+    }
+    RgbToCielab(rgb, lab);
+}
+
+void VQEncoder::CielabToPixel(const float* lab, uint8_t channelCount, uint8_t* pixel) const {
+    uint8_t rgb[3];
+    CielabToRgb(lab, rgb);
+    switch (channelCount) {
+    case 1: // Grayscale (use luminance approximation)
+        pixel[0] = static_cast<uint8_t>(rgb[0] * 0.299 + rgb[1] * 0.587 + rgb[2] * 0.114);
+        break;
+    case 2: // Grayscale + Alpha
+        pixel[0] = static_cast<uint8_t>(rgb[0] * 0.299 + rgb[1] * 0.587 + rgb[2] * 0.114);
+        pixel[1] = static_cast<uint8_t>(std::clamp(lab[3], 0.0f, 255.0f));
+        break;
+    case 3: // RGB
+        std::memcpy(pixel, rgb, 3);
+        break;
+    case 4: // RGBA
+        std::memcpy(pixel, rgb, 3);
+        pixel[3] = static_cast<uint8_t>(std::clamp(lab[3], 0.0f, 255.0f));
+        break;
+    }
+}
+
+CielabBlock VQEncoder::PixelBlockToCielabBlock(const std::vector<uint8_t>& pixelBlock, uint8_t channelCount) const {
+    CielabBlock labBlock(16 * 4); // CIELAB is always 4 component (L,a,b,A)
     for (size_t i = 0; i < 16; ++i) {
-        RgbToCielab(&rgbaBlock[i * 4], &labBlock[i * 4]);
-        labBlock[i * 4 + 3] = static_cast<float>(rgbaBlock[i * 4 + 3]); // Alpha
+        PixelToCielab(&pixelBlock[i * channelCount], channelCount, &labBlock[i * 4]);
     }
     return labBlock;
 }
 
-std::vector<uint8_t> VQEncoder::CielabBlockToRgbaBlock(const CielabBlock& labBlock) const {
-    std::vector<uint8_t> rgbaBlock(16 * 4);
+std::vector<uint8_t> VQEncoder::CielabBlockToPixelBlock(const CielabBlock& labBlock, uint8_t channelCount) const {
+    std::vector<uint8_t> pixelBlock(16 * channelCount);
     for (size_t i = 0; i < 16; ++i) {
-        CielabToRgb(&labBlock[i * 4], &rgbaBlock[i * 4]);
-        rgbaBlock[i * 4 + 3] = static_cast<uint8_t>(std::clamp(labBlock[i * 4 + 3], 0.0f, 255.0f)); // Alpha
+        CielabToPixel(&labBlock[i * 4], channelCount, &pixelBlock[i * channelCount]);
     }
-    return rgbaBlock;
+    return pixelBlock;
 }
 
-std::vector<uint8_t> VQEncoder::CompressSingleBlock(const uint8_t* rgbaBlock, uint8_t channels, int numThreads, float quality, uint8_t alphaThreshold) {
-    return bcnCompressor.CompressRGBA(rgbaBlock, 4, 4, channels, bcFormat, numThreads, quality, alphaThreshold);
+std::vector<uint8_t> VQEncoder::CompressSingleBlock(const uint8_t* pixelBlock, uint8_t channels, int numThreads, float quality) {
+    return bcnCompressor.Compress(pixelBlock, 4, 4, channels, bcFormat, numThreads, quality);
 }
 
 VQEncoder::VQEncoder(const CompressionConfig& cfg)

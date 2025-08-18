@@ -82,7 +82,6 @@ set(HEADER_FILES
     include/bcn_compressor.h
     include/vq_bcn_compressor.h
     include/vq_encoder.h
-    include/oklab_math.hpp
 )
 
 # Create the shared library (DLL)
