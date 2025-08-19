@@ -20,6 +20,8 @@ This comes with a downside of course: results produced by current implementation
 *Which is a fair trade-off* considering it can compress a 4K texture from **12.3MB** down to just **1.3~ MB**, or an 4096x2048 HDR texture from **17.8MB** down to just **208KB**(some luminance is lost, but it's still pretty decent for skyboxes in games for example).
 But for high-res textures (**2K, 4K**) compression artifacts are visually negligible on large surfaces.
 
+Thanks for the star [WzrterFX](https://github.com/WzrterFX) : D
+
 Here is an example of using this library:
 ```cpp
 #include "vq_bcn_compressor.h" // Include the compressor
