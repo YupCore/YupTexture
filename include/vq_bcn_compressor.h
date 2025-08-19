@@ -33,7 +33,7 @@ public:
     void LoadDictionary(const uint8_t* dictData, size_t dictSize);
 
     // Main compression function for LDR textures
-    std::vector<uint8_t>& Compress(
+    std::vector<uint8_t> Compress(
         const uint8_t* inData, // Renamed from rgbaData
         uint32_t width,
         uint32_t height,
@@ -42,7 +42,7 @@ public:
     );
 
     // A distinct method for HDR textures
-    std::vector<uint8_t>& CompressHDR(
+    std::vector<uint8_t> CompressHDR(
         const float* inData, // Renamed from rgbaData
         uint32_t width,
         uint32_t height,

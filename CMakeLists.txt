@@ -69,24 +69,17 @@ foreach(LIB ${COMPRESSONATOR_LIBRARIES})
     endif()
 endforeach()
 
-# Add the source files to the project
-set(SOURCE_FILES
-    bcn_compressor.cpp
-    vq_bcn_compressor.cpp
-    vq_encoder.cpp
-)
+# Collect all .cpp source files in the src directory
+file(GLOB TEXTURE_SOURCES "src/*.cpp")
 
-# Add the header files to the project
-set(HEADER_FILES
-    include/vq_bcn_types.h
-    include/bcn_compressor.h
-    include/vq_bcn_compressor.h
-    include/vq_encoder.h
-    thirdparty/colorm/include/colorm.h
-)
+# Collect all .h header files in the include directory
+file(GLOB TEXTURE_HEADERS "include/*.h")
 
 # Create the shared library (DLL)
-add_library(${PROJECT_NAME} SHARED ${HEADER_FILES} ${SOURCE_FILES})
+add_library(${PROJECT_NAME} SHARED
+    thirdparty/colorm/include/colorm.h
+    ${TEXTURE_HEADERS}
+    ${TEXTURE_SOURCES})
 
 # Include directories
 target_include_directories(${PROJECT_NAME} PRIVATE
@@ -150,7 +143,7 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE
 # Build example executable if enabled
 if(BUILD_EXAMPLE)
     # Add example executable
-    add_executable(YupTextureExample example.cpp)
+    add_executable(YupTextureExample example/example.cpp)
 
     # Find required packages via vcpkg
     find_package(Stb REQUIRED)

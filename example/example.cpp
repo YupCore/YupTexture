@@ -231,7 +231,7 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
     params.bcQuality = 1.0f;
     params.zstdLevel = 20;
     params.numThreads = 16;
-    params.useVQ = true;
+    params.useVQ = false;
     params.useZstd = true;
 
     switch (type) {
@@ -291,7 +291,7 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
         std::string out_name_bin = "output/" + filePath.stem().string() + suffix + ".yupt2";
         {
             auto start_compress = std::chrono::high_resolution_clock::now();
-            CompressedTexture compressed;
+            std::vector<uint8_t> compressed;
             // Call the correct Compress overload based on whether the image is HDR
             if (image.isHDR) {
                 compressed = compressor.CompressHDR(std::get<std::vector<float>>(image.data).data(), image.width, image.height, image.channels, params);
@@ -303,32 +303,39 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
             std::cout << "Compression finished in " << std::fixed << std::setprecision(2)
                 << std::chrono::duration<double>(end_compress - start_compress).count() << "s.\n";
 
-            compressed.Save(out_name_bin);
+            std::ofstream out;
+            out.open(out_name_bin, std::ios::binary);
+            out.write(reinterpret_cast<char*>(compressed.data()), compressed.size());
             std::cout << "Saved compressed file: " << out_name_bin << std::endl;
         }
 
         // --- Decompression and Verification ---
-        CompressedTexture loadedTexture;
-        loadedTexture.Load(out_name_bin);
+        std::vector<uint8_t> loadedTexture;
+        std::ifstream in;
+        in.open(out_name_bin, std::ios::binary | std::ios::ate);
+        loadedTexture.resize(in.tellg());
+        in.seekg(0, std::ios::beg);
+        in.read(reinterpret_cast<char*>(loadedTexture.data()), loadedTexture.size());
 
         auto start_decompress_bcn = std::chrono::high_resolution_clock::now();
-        auto bcData = compressor.DecompressToBCn(loadedTexture);
+        TextureInfo outInfo;
+        auto bcData = compressor.DecompressToBCn(loadedTexture, outInfo);
         auto end_decompress_bcn = std::chrono::high_resolution_clock::now();
         std::chrono::duration<double> diff_decompress_bcn = end_decompress_bcn - start_decompress_bcn;
         std::cout << "Decompression to BCn (GPU-ready) finished in " << std::fixed << std::setprecision(4) << diff_decompress_bcn.count() << " seconds.\n";
 
         auto start_decompress = std::chrono::high_resolution_clock::now();
         Image outputImage;
-        outputImage.width = image.width;
-        outputImage.height = image.height;
-        outputImage.channels = image.channels;
-        outputImage.isHDR = image.isHDR;
+        outputImage.width = outInfo.width;
+        outputImage.height = outInfo.height;
+        outputImage.channels = outInfo.originalChannelCount;
+        outputImage.isHDR = outInfo.compressionFlags & COMPRESSION_FLAGS_IS_HDR;
 
         if (image.isHDR) {
-            outputImage.data = compressor.DecompressHDR(loadedTexture);
+            outputImage.data = compressor.DecompressHDR(loadedTexture, outInfo);
         }
         else {
-            outputImage.data = compressor.Decompress(loadedTexture);
+            outputImage.data = compressor.Decompress(loadedTexture, outInfo);
             auto end_decompress = std::chrono::high_resolution_clock::now();
             std::cout << "Decompression to RGB finished in " << std::fixed << std::setprecision(4)
                 << std::chrono::duration<double>(end_decompress - start_decompress).count() << "s.\n";

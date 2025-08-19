@@ -102,60 +102,6 @@ struct VQCodebook {
     }
 };
 
-//class CompressedTexture {
-//public:
-//    TextureInfo info;
-//
-//    void Load(const std::vector<uint8_t>& mem)
-//    {
-//        std::memcpy(&info, mem.data(), sizeof(TextureInfo));
-//
-//        size_t dataSize = mem.size() - sizeof(TextureInfo);
-//        compressedData.resize(dataSize);
-//        std::memcpy(compressedData.data(), mem.data() + sizeof(TextureInfo), dataSize);
-//    }
-//
-//    void Save(std::vector<uint8_t>& out) const
-//    {
-//        out.resize(sizeof(TextureInfo) + compressedData.size());
-//        std::memcpy(out.data(), &info, sizeof(TextureInfo));
-//        std::memcpy(out.data() + sizeof(TextureInfo), compressedData.data(), compressedData.size());
-//    }
-//
-//    void Load(const std::string& fName)
-//    {
-//        std::ifstream inFile(fName, std::ios::binary);
-//        if (!inFile) throw std::runtime_error("Failed to open " + fName + " for reading.");
-//        inFile.read(reinterpret_cast<char*>(&info), sizeof(TextureInfo));
-//        inFile.seekg(0, std::ios::end);
-//        size_t fileDataSize = static_cast<size_t>(inFile.tellg()) - sizeof(TextureInfo);
-//        compressedData.resize(fileDataSize);
-//        inFile.seekg(sizeof(TextureInfo), std::ios::beg);
-//        inFile.read(reinterpret_cast<char*>(compressedData.data()), fileDataSize);
-//        inFile.close();
-//    }
-//
-//    void Save(const std::string& fName) const
-//    {
-//        std::ofstream outFile(fName, std::ios::binary);
-//        outFile.write(reinterpret_cast<const char*>(&info), sizeof(TextureInfo));
-//        outFile.write(reinterpret_cast<const char*>(compressedData.data()), compressedData.size());
-//        outFile.close();
-//    }
-//
-//    size_t GetUncompressedSize() const {
-//        return info.GetTotalBlocks() * BCBlockSize::GetSize(info.format);
-//    }
-//    friend class VQBCnCompressor;
-//
-//protected: // Idiot-proof
-//    // These are only used during compression and are not part of the final file format.
-//    VQCodebook codebook;
-//    std::vector<uint32_t> indices;
-//    // This holds the final data to be written to a file.
-//    std::vector<uint8_t> compressedData;
-//};
-
 enum class DistanceMetric {
     SAD_SIMD,       // Fastest: SAD on RGB values, accelerated with AVX2.
     PERCEPTUAL_OKLAB  // High Quality: Euclidean distance in OKLAB color space.

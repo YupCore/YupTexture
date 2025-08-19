@@ -42,7 +42,7 @@ int32_t BCnCompressor::GetSourceCMPFormat(uint32_t channelCount, bool isFloat)
     }
 }
 
-std::vector<uint8_t> BCnCompressor::Compress(const uint8_t* inData, uint32_t width, uint32_t height, uint32_t channelCount, BCFormat format, int numThreads, float quality, uint8_t alphaThreshold)
+std::vector<uint8_t> BCnCompressor::Compress(const uint8_t* inData, uint32_t width, uint32_t height, uint32_t channelCount, BCFormat format, int numThreads, float quality, uint8_t alphaThreshold, bool flipRGB)
 {
     CMP_Texture srcTexture = {};
     srcTexture.dwSize = sizeof(CMP_Texture);
@@ -58,17 +58,20 @@ std::vector<uint8_t> BCnCompressor::Compress(const uint8_t* inData, uint32_t wid
         return {};
     }
 
-    //==========================================================================
-    // if the source format is RGB_888 swizzle it to BGR_888, because yes, it just works
-    //==========================================================================
-    if (srcTexture.format == CMP_FORMAT_RGB_888)
+    if (flipRGB)
     {
-        unsigned char red;
-        for (CMP_DWORD i = 0; i < srcTexture.dwDataSize; i += 3)
+        //==========================================================================
+        // if the source format is RGB_888 swizzle it to BGR_888, because yes, it just works
+        //==========================================================================
+        if (srcTexture.format == CMP_FORMAT_RGB_888)
         {
-            red = srcTexture.pData[i];
-            srcTexture.pData[i] = srcTexture.pData[i + 2];
-            srcTexture.pData[i + 2] = red;
+            unsigned char red;
+            for (CMP_DWORD i = 0; i < srcTexture.dwDataSize; i += 3)
+            {
+                red = srcTexture.pData[i];
+                srcTexture.pData[i] = srcTexture.pData[i + 2];
+                srcTexture.pData[i + 2] = red;
+            }
         }
     }
 

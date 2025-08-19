@@ -22,7 +22,8 @@ public:
         BCFormat format,
         int numThreads,
         float quality = 1.0f,
-        uint8_t alphaThreshold = 128
+        uint8_t alphaThreshold = 128,
+        bool flipRGB = false
     );
 
     // --- HDR Compression ---
