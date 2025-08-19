@@ -102,13 +102,9 @@ struct VQCodebook {
     }
 };
 
-struct CompressedTexture {
+class CompressedTexture {
+public:
     TextureInfo info;
-    // These are only used during compression and are not part of the final file format.
-    VQCodebook codebook;
-    std::vector<uint32_t> indices;
-    // This holds the final data to be written to a file.
-    std::vector<uint8_t> compressedData;
 
     void Load(const std::vector<uint8_t>& mem)
     {
@@ -150,6 +146,14 @@ struct CompressedTexture {
     size_t GetUncompressedSize() const {
         return info.GetTotalBlocks() * BCBlockSize::GetSize(info.format);
     }
+    friend class VQBCnCompressor;
+
+protected: // Idiot-proof
+    // These are only used during compression and are not part of the final file format.
+    VQCodebook codebook;
+    std::vector<uint32_t> indices;
+    // This holds the final data to be written to a file.
+    std::vector<uint8_t> compressedData;
 };
 
 enum class DistanceMetric {
