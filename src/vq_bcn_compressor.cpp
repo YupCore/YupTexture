@@ -1,7 +1,6 @@
 #include "vq_bcn_compressor.h"
 #include "vq_encoder.h"
 #include <zstd.h>
-#include <iostream>
 
 VQBCnCompressor::ZstdContext::ZstdContext()
 {
@@ -90,8 +89,6 @@ std::vector<uint8_t> VQBCnCompressor::Compress(const uint8_t* inData, uint32_t w
     bool enableLdm = (width >= 4000 || height >= 4000);
 
     bool flipRGB = !params.useVQ;
-
-    std::cout << "Flip rgb?: " << (flipRGB ? "true" : "false") << std::endl;
 
     // Use the generic 'Compress' which handles all channel counts
     auto bcData = bcnCompressor.Compress(
