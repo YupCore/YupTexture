@@ -46,10 +46,10 @@ if(WIN32)
         set(COMPRESSONATOR_LIBRARIES
             "${COMPRESSONATOR_LIB_DIR}/Compressonator_MDd.lib"
         )
-    elseif(CMAKE_BUILD_TYPE STREQUAL "Release")
-        set(COMPRESSONATOR_LIBRARIES
-            "${COMPRESSONATOR_LIB_DIR}/Compressonator_MD.lib"
-        )
+	elseif(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+		set(COMPRESSONATOR_LIBRARIES
+			"${COMPRESSONATOR_LIB_DIR}/Compressonator_MD.lib"
+		)
     endif()
 else()
     set(COMPRESSONATOR_LIBRARIES
