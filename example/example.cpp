@@ -231,7 +231,7 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
     params.bcQuality = 1.0f;
     params.zstdLevel = 20;
     params.numThreads = 16;
-    params.useVQ = false;
+    params.useVQ = true;
     params.useZstd = true;
 
     switch (type) {
