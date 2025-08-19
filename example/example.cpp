@@ -306,6 +306,7 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
             std::ofstream out;
             out.open(out_name_bin, std::ios::binary);
             out.write(reinterpret_cast<char*>(compressed.data()), compressed.size());
+            out.close();
             std::cout << "Saved compressed file: " << out_name_bin << std::endl;
         }
 
@@ -316,6 +317,7 @@ void ProcessImage(const std::filesystem::path& filePath, VQBCnCompressor& compre
         loadedTexture.resize(in.tellg());
         in.seekg(0, std::ios::beg);
         in.read(reinterpret_cast<char*>(loadedTexture.data()), loadedTexture.size());
+        in.close();
 
         auto start_decompress_bcn = std::chrono::high_resolution_clock::now();
         TextureInfo outInfo;
