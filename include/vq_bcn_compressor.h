@@ -33,7 +33,7 @@ public:
     void LoadDictionary(const uint8_t* dictData, size_t dictSize);
 
     // Main compression function for LDR textures
-    CompressedTexture Compress(
+    std::vector<uint8_t>& Compress(
         const uint8_t* inData, // Renamed from rgbaData
         uint32_t width,
         uint32_t height,
@@ -42,7 +42,7 @@ public:
     );
 
     // A distinct method for HDR textures
-    CompressedTexture CompressHDR(
+    std::vector<uint8_t>& CompressHDR(
         const float* inData, // Renamed from rgbaData
         uint32_t width,
         uint32_t height,
@@ -50,11 +50,11 @@ public:
         const CompressionParams& params
     );
 
-    std::vector<uint8_t> DecompressToBCn(const CompressedTexture& compressed, int numThreads = 16);
+    std::vector<uint8_t> DecompressToBCn(const std::vector<uint8_t>& compressedData, TextureInfo& outInfo, int numThreads = 16);
 
     // Decompresses to the original channel count stored in the texture info.
-    std::vector<uint8_t> Decompress(const CompressedTexture& compressed);
+    std::vector<uint8_t> Decompress(const std::vector<uint8_t>& compressedData, TextureInfo& outInfo);
 
     // Decompresses HDR to the original channel count stored in the texture info.
-    std::vector<float> DecompressHDR(const CompressedTexture& compressed);
+    std::vector<float> DecompressHDR(const std::vector<uint8_t>& compressedData, TextureInfo& outInfo);
 };

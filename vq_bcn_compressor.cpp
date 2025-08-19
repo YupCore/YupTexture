@@ -77,14 +77,14 @@ void VQBCnCompressor::LoadDictionary(const uint8_t* dictData, size_t dictSize)
     }
 }
 
-CompressedTexture VQBCnCompressor::Compress(const uint8_t* inData, uint32_t width, uint32_t height, uint8_t channels, const CompressionParams& params)
+std::vector<uint8_t>& VQBCnCompressor::Compress(const uint8_t* inData, uint32_t width, uint32_t height, uint8_t channels, const CompressionParams& params)
 {
-    CompressedTexture result;
-    result.info.width = width;
-    result.info.height = height;
-    result.info.format = params.bcFormat;
-    result.info.originalChannelCount = channels; // Store original channel count
-    result.info.compressionFlags = COMPRESSION_FLAGS_DEFAULT;
+    TextureInfo info;
+    info.width = width;
+    info.height = height;
+    info.format = params.bcFormat;
+    info.originalChannelCount = channels; // Store original channel count
+    info.compressionFlags = COMPRESSION_FLAGS_DEFAULT;
 
     bool enableLdm = (width >= 4000 || height >= 4000);
 
@@ -98,21 +98,24 @@ CompressedTexture VQBCnCompressor::Compress(const uint8_t* inData, uint32_t widt
     }
 
     if (!params.useVQ)
-        result.info.compressionFlags |= COMPRESSION_FLAGS_VQ_BYPASSED;
+        info.compressionFlags |= COMPRESSION_FLAGS_VQ_BYPASSED;
     if (!params.useZstd)
-        result.info.compressionFlags |= COMPRESSION_FLAGS_ZSTD_BYPASSED;
+        info.compressionFlags |= COMPRESSION_FLAGS_ZSTD_BYPASSED;
 
-    if (result.info.width < 32 || result.info.height < 32) // bypass zstd and vq for VERY small textures(smaller than 32 x 32)
+    if (info.width < 32 || info.height < 32) // bypass zstd and vq for VERY small textures(smaller than 32 x 32)
     {
-        result.info.compressionFlags |= COMPRESSION_FLAGS_VQ_BYPASSED;
-        result.info.compressionFlags |= COMPRESSION_FLAGS_ZSTD_BYPASSED;
+        info.compressionFlags |= COMPRESSION_FLAGS_VQ_BYPASSED;
+        info.compressionFlags |= COMPRESSION_FLAGS_ZSTD_BYPASSED;
     }
 
-    // --- Handle VQ Bypass ---
-    if (result.info.compressionFlags & COMPRESSION_FLAGS_VQ_BYPASSED) {
-        result.info.storedCodebookEntries = 0;
+    std::vector<uint8_t> outputBuffer;
 
-        if (result.info.compressionFlags & COMPRESSION_FLAGS_ZSTD_BYPASSED) {
+    // --- Handle VQ Bypass ---
+    if (info.compressionFlags & COMPRESSION_FLAGS_VQ_BYPASSED) {
+        info.storedCodebookEntries = 0;
+
+        if (info.compressionFlags & COMPRESSION_FLAGS_ZSTD_BYPASSED) {
+            outputBuffer.push_back(bcData);
             result.compressedData = std::move(bcData);
         }
         else {
@@ -146,8 +149,8 @@ CompressedTexture VQBCnCompressor::Compress(const uint8_t* inData, uint32_t widt
     result.codebook = vqEncoder.BuildCodebook(pixelBlocks, channels, pixelCentroids, params);
     result.indices = vqEncoder.QuantizeBlocks(pixelBlocks, channels, pixelCentroids, params);
 
-    result.info.storedCodebookEntries = result.codebook.entries.size();
-    size_t codebookDataSize = result.info.storedCodebookEntries * blockSize;
+    info.storedCodebookEntries = result.codebook.entries.size();
+    size_t codebookDataSize = info.storedCodebookEntries * blockSize;
     size_t indicesDataSize = result.indices.size() * sizeof(uint32_t);
     std::vector<uint8_t> payloadData(codebookDataSize + indicesDataSize);
 
@@ -161,7 +164,7 @@ CompressedTexture VQBCnCompressor::Compress(const uint8_t* inData, uint32_t widt
     result.codebook.entries.clear();
     result.indices.clear();
 
-    if (result.info.compressionFlags & COMPRESSION_FLAGS_ZSTD_BYPASSED) {
+    if (info.compressionFlags & COMPRESSION_FLAGS_ZSTD_BYPASSED) {
         result.compressedData = std::move(payloadData);
     }
     else {
@@ -171,29 +174,29 @@ CompressedTexture VQBCnCompressor::Compress(const uint8_t* inData, uint32_t widt
     return result;
 }
 
-CompressedTexture VQBCnCompressor::CompressHDR(const float* inData, uint32_t width, uint32_t height, uint8_t channels, const CompressionParams& params)
+std::vector<uint8_t>& VQBCnCompressor::CompressHDR(const float* inData, uint32_t width, uint32_t height, uint8_t channels, const CompressionParams& params)
 {
-    CompressedTexture result;
-    result.info.compressionFlags = COMPRESSION_FLAGS_DEFAULT;
+    TextureInfo info;
+    info.compressionFlags = COMPRESSION_FLAGS_DEFAULT;
     if (!params.useVQ)
-        result.info.compressionFlags |= COMPRESSION_FLAGS_VQ_BYPASSED;
+        info.compressionFlags |= COMPRESSION_FLAGS_VQ_BYPASSED;
     if (!params.useZstd)
-        result.info.compressionFlags |= COMPRESSION_FLAGS_ZSTD_BYPASSED;
+        info.compressionFlags |= COMPRESSION_FLAGS_ZSTD_BYPASSED;
 
-    if (result.info.width < 32 || result.info.height < 32) // bypass zstd and vq for VERY small textures(smaller than 32 x 32)
+    if (info.width < 32 || info.height < 32) // bypass zstd and vq for VERY small textures(smaller than 32 x 32)
     {
-        result.info.compressionFlags |= COMPRESSION_FLAGS_VQ_BYPASSED;
-        result.info.compressionFlags |= COMPRESSION_FLAGS_ZSTD_BYPASSED;
+        info.compressionFlags |= COMPRESSION_FLAGS_VQ_BYPASSED;
+        info.compressionFlags |= COMPRESSION_FLAGS_ZSTD_BYPASSED;
     }
 
     // --- Handle VQ Bypass ---
-    if (result.info.compressionFlags & COMPRESSION_FLAGS_VQ_BYPASSED) {
-        result.info.width = width;
-        result.info.height = height;
-        result.info.format = params.bcFormat;
-        result.info.originalChannelCount = channels;
-        result.info.compressionFlags |= COMPRESSION_FLAGS_IS_HDR;
-        result.info.storedCodebookEntries = 0;
+    if (info.compressionFlags & COMPRESSION_FLAGS_VQ_BYPASSED) {
+        info.width = width;
+        info.height = height;
+        info.format = params.bcFormat;
+        info.originalChannelCount = channels;
+        info.compressionFlags |= COMPRESSION_FLAGS_IS_HDR;
+        info.storedCodebookEntries = 0;
 
         bool enableLdm = (width >= 4000 || height >= 4000);
 
@@ -201,7 +204,7 @@ CompressedTexture VQBCnCompressor::CompressHDR(const float* inData, uint32_t wid
         if (bcData.empty()) {
             throw std::runtime_error("HDR BCn compression failed");
         }
-        if (result.info.compressionFlags & COMPRESSION_FLAGS_ZSTD_BYPASSED) {
+        if (info.compressionFlags & COMPRESSION_FLAGS_ZSTD_BYPASSED) {
             result.compressedData = std::move(bcData);
         }
         else {
@@ -211,11 +214,11 @@ CompressedTexture VQBCnCompressor::CompressHDR(const float* inData, uint32_t wid
     }
 
     // --- HDR VQ Path Setup ---
-    result.info.width = width;
-    result.info.height = height;
-    result.info.format = params.bcFormat;
-    result.info.originalChannelCount = channels;
-    result.info.compressionFlags = COMPRESSION_FLAGS_IS_HDR;
+    info.width = width;
+    info.height = height;
+    info.format = params.bcFormat;
+    info.originalChannelCount = channels;
+    info.compressionFlags = COMPRESSION_FLAGS_IS_HDR;
 
     CompressionConfig vqConfig;
     vqConfig.SetQuality(params.quality);
@@ -257,9 +260,9 @@ CompressedTexture VQBCnCompressor::CompressHDR(const float* inData, uint32_t wid
     result.codebook = vqEncoder.BuildCodebookHDR(pixelFloatBlocks, channels, pixelFloatCentroids, params);
     result.indices = vqEncoder.QuantizeBlocksHDR(pixelFloatBlocks, channels, pixelFloatCentroids, params);
 
-    result.info.storedCodebookEntries = result.codebook.entries.size();
+    info.storedCodebookEntries = result.codebook.entries.size();
     const size_t blockSize = BCBlockSize::GetSize(params.bcFormat);
-    size_t codebookDataSize = result.info.storedCodebookEntries * blockSize;
+    size_t codebookDataSize = info.storedCodebookEntries * blockSize;
     size_t indicesDataSize = result.indices.size() * sizeof(uint32_t);
     payloadData.resize(codebookDataSize + indicesDataSize);
 
@@ -273,7 +276,7 @@ CompressedTexture VQBCnCompressor::CompressHDR(const float* inData, uint32_t wid
     result.codebook.entries.clear();
     result.indices.clear();
 
-    if (result.info.compressionFlags & COMPRESSION_FLAGS_ZSTD_BYPASSED) {
+    if (info.compressionFlags & COMPRESSION_FLAGS_ZSTD_BYPASSED) {
         result.compressedData = std::move(payloadData);
     }
     else {
@@ -284,7 +287,7 @@ CompressedTexture VQBCnCompressor::CompressHDR(const float* inData, uint32_t wid
     return result;
 }
 
-std::vector<uint8_t> VQBCnCompressor::DecompressToBCn(const CompressedTexture& compressed, int numThreads)
+std::vector<uint8_t> VQBCnCompressor::DecompressToBCn(const std::vector<uint8_t>& compressedData, TextureInfo& outInfo, int numThreads)
 {
     if (compressed.compressedData.empty()) {
         throw std::runtime_error("Compressed data stream is empty. Cannot decompress.");
@@ -358,7 +361,7 @@ std::vector<uint8_t> VQBCnCompressor::DecompressToBCn(const CompressedTexture& c
     return bcData;
 }
 
-std::vector<uint8_t> VQBCnCompressor::Decompress(const CompressedTexture& compressed)
+std::vector<uint8_t> VQBCnCompressor::Decompress(const std::vector<uint8_t>& compressedData, TextureInfo& outInfo)
 {
     if (compressed.info.compressionFlags & COMPRESSION_FLAGS_IS_HDR) {
         throw std::runtime_error("Cannot decompress HDR texture to 8-bit data. Use DecompressHDR instead.");
@@ -372,7 +375,7 @@ std::vector<uint8_t> VQBCnCompressor::Decompress(const CompressedTexture& compre
     return rawData;
 }
 
-std::vector<float> VQBCnCompressor::DecompressHDR(const CompressedTexture& compressed)
+std::vector<float> VQBCnCompressor::DecompressHDR(const std::vector<uint8_t>& compressedData, TextureInfo& outInfo)
 {
     if (!(compressed.info.compressionFlags & COMPRESSION_FLAGS_IS_HDR)) {
         throw std::runtime_error("Cannot decompress LDR texture to float data. Use Decompress instead.");
