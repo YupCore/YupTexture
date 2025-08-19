@@ -110,9 +110,8 @@ struct CompressedTexture {
     // This holds the final data to be written to a file.
     std::vector<uint8_t> compressedData;
 
-    void Load(const std::vector<uint8_t> mem)
+    void Load(const std::vector<uint8_t>& mem)
     {
-        assert(mem.size() > sizeof(TextureInfo));
         std::memcpy(&info, mem.data(), sizeof(TextureInfo));
 
         size_t dataSize = mem.size() - sizeof(TextureInfo);
