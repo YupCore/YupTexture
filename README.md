@@ -25,7 +25,9 @@ Thanks for the star [WzrterFX](https://github.com/WzrterFX) : D
 Here is an example of using this library:
 ```cpp
 #include "vq_bcn_compressor.h" // Include the compressor
+#define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
+#define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
 #include <iostream>
 #include <vector>
@@ -66,8 +68,8 @@ int main() {
 
     // --- Step 6: Save decompressed image as PNG for verification ---
     stbi_write_png("output.png", outInfo.width, outInfo.height,
-                   outInfo.originalChannelCount, decompressed.data(),
-                   outInfo.width * outInfo.originalChannelCount);
+        outInfo.originalChannelCount, decompressed.data(),
+        outInfo.width * outInfo.originalChannelCount);
 
     std::cout << "Done! Compressed -> Decompressed -> output.png\n";
     return 0;
