@@ -8,12 +8,15 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # Add option for building example
 option(BUILD_EXAMPLE "Build the example executable" ON)
+option(YUPTEXTURE_BUILD_SHARED OFF "Build YupTexture as a shared library")
 
 # Find OpenMP
 find_package(OpenMP REQUIRED)
 
-# Find required packages via vcpkg
-find_package(zstd CONFIG REQUIRED)
+set(ZSTD_BUILD_SHARED OFF CACHE BOOL "Do not build the shared lib")
+set(ZSTD_LEGACY_SUPPORT OFF CACHE BOOL "Disable legacy support")
+
+add_subdirectory(thirdparty/zstd/build/cmake)
 
 # Platform detection
 if(WIN32)
@@ -75,16 +78,24 @@ file(GLOB TEXTURE_SOURCES "src/*.cpp")
 # Collect all .h header files in the include directory
 file(GLOB TEXTURE_HEADERS "include/*.h")
 
-# Create the shared library (DLL)
-add_library(${PROJECT_NAME} SHARED
-    thirdparty/colorm/include/colorm.h
-    ${TEXTURE_HEADERS}
-    ${TEXTURE_SOURCES})
+if(YUPTEXTURE_BUILD_SHARED)
+    add_library(${PROJECT_NAME} SHARED
+        thirdparty/colorm/include/colorm.h
+        ${TEXTURE_HEADERS}
+        ${TEXTURE_SOURCES})
+else()
+    add_library(${PROJECT_NAME} STATIC
+        thirdparty/colorm/include/colorm.h
+        ${TEXTURE_HEADERS}
+        ${TEXTURE_SOURCES})
+endif()
 
 # Include directories
 target_include_directories(${PROJECT_NAME} PRIVATE
     include
     thirdparty/colorm/include/
+    thirdparty/stb/
+    thirdparty/zstd/lib/
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${COMPRESSONATOR_INCLUDE_DIR}
 )
@@ -96,7 +107,7 @@ if(UNIX AND NOT APPLE) # I fucking hate linux
     # Link libraries, including OpenMP
     target_link_libraries(${PROJECT_NAME} PRIVATE
         ${COMPRESSONATOR_LIBRARIES}
-        zstd::libzstd
+        libzstd_static
         OpenMP::OpenMP_CXX
         Threads::Threads
         TBB::tbb
@@ -105,7 +116,7 @@ else()
     # Link libraries, including OpenMP
     target_link_libraries(${PROJECT_NAME} PRIVATE
         ${COMPRESSONATOR_LIBRARIES}
-        zstd::libzstd
+        libzstd_static
         OpenMP::OpenMP_CXX
     )
 endif()
@@ -145,22 +156,21 @@ if(BUILD_EXAMPLE)
     # Add example executable
     add_executable(YupTextureExample example/example.cpp)
 
-    # Find required packages via vcpkg
-    find_package(Stb REQUIRED)
-    
     # Include directories for example
     target_include_directories(YupTextureExample PRIVATE
         include
+        thirdparty/colorm/include/
+        thirdparty/stb/
+        thirdparty/zstd/lib/
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${COMPRESSONATOR_INCLUDE_DIR}
-        ${Stb_INCLUDE_DIR}
     )
     
     # Link libraries for example, including OpenMP
     target_link_libraries(YupTextureExample PRIVATE
         ${PROJECT_NAME}
         ${COMPRESSONATOR_LIBRARIES}
-        zstd::libzstd
+        libzstd_static
         OpenMP::OpenMP_CXX
     )
     
