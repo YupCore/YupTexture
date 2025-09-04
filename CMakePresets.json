@@ -3,32 +3,29 @@
   "configurePresets": [
     {
       "name": "x64-dbg",
-      "displayName": "x64-Debug (vcpkg)",
+      "displayName": "x64-Debug",
       "generator": "Ninja",
       "binaryDir": "${sourceDir}/out/build/x64-dbg",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "Debug",
-        "CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+        "CMAKE_BUILD_TYPE": "Debug"
       }
     },
 	{
 	  "name": "x64-rel",
-	  "displayName": "x64-Release (vcpkg)",
+	  "displayName": "x64-Release",
 	  "generator": "Ninja",
 	  "binaryDir": "${sourceDir}/out/build/x64-rel",
 	  "cacheVariables": {
-		"CMAKE_BUILD_TYPE": "Release",
-		"CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+		"CMAKE_BUILD_TYPE": "Release"
 	  }
 	},
 	{
 	  "name": "x64-rel-dbg",
-	  "displayName": "x64-Release with PDB (vcpkg)",
+	  "displayName": "x64-Release with PDB",
 	  "generator": "Ninja",
 	  "binaryDir": "${sourceDir}/out/build/x64-rel-dbg",
 	  "cacheVariables": {
-		"CMAKE_BUILD_TYPE": "RelWithDebInfo",
-		"CMAKE_TOOLCHAIN_FILE": "$env{VCPKG_ROOT}/scripts/buildsystems/vcpkg.cmake"
+		"CMAKE_BUILD_TYPE": "RelWithDebInfo"
 	  }
 	}
   ]
