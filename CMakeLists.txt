@@ -126,7 +126,11 @@ if(OpenMP_CXX_FOUND)
     target_compile_options(${PROJECT_NAME} PRIVATE ${OpenMP_CXX_FLAGS})
 endif()
 
-target_compile_definitions(${PROJECT_NAME} PRIVATE YUPTEXTURE_EXPORT)
+if(YUPTEXTURE_BUILD_SHARED)
+    target_compile_definitions(${PROJECT_NAME} PRIVATE YUPTEXTURE_EXPORT)
+else()
+    target_compile_definitions(${PROJECT_NAME} PUBLIC YUPTEXTURE_EXPORT)
+endif()
 
 # Platform-specific settings
 if(WIN32)
